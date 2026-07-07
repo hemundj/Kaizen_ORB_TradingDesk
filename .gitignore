@@ -1,0 +1,30 @@
+# PyCharm
+.idea/
+
+#API Keys
+config.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Environment Variables
+.env
+
+# OS Files
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Data Exports
+*.csv
+*.xlsx
