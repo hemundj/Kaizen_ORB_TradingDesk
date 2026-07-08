@@ -406,6 +406,13 @@ class KaizenScanner:
         elif gain > 5:
             state = "PULLBACK"
 
+        elif (
+            rvol >= 3
+            and distance_from_hod <= 3
+            and price > current_vwap
+        ):
+            state = "LAUNCH PAD"
+
         # =========================
         # TRADE PLAN
         # =========================
@@ -553,8 +560,9 @@ class KaizenScanner:
         #)
 
         state_rank = {
-            "HOD ATTACK": 6,
-            "ORB BREAKOUT": 5,
+            "HOD ATTACK": 7,
+            "ORB BREAKOUT": 6,
+            "LAUNCH PAD": 5,
             "VWAP RECLAIM": 4,
             "PULLBACK": 3,
             "EXTENDED": 2,
