@@ -107,10 +107,14 @@ class ORBDashboard:
         # =========================
         columns = [
             "Symbol",
+            "State",
+            "ORB",
             "Opportunity",
             #"Grade",
+            "WashStatus",
             "VWAP",
-            "ORB_High",
+
+            #"ORB_High",
             "Price",
             #"ContGrade",
             #"Continuation",
@@ -118,8 +122,8 @@ class ORBDashboard:
             "ATR",
             #"ORB_Low",
             #"ORB_Break",
-            "Premarket",
-            "EarlySignal",
+            #"Premarket",
+            #"EarlySignal",
             "Gain%",
             "Score",
             "Setup",
@@ -187,10 +191,14 @@ class ORBDashboard:
 
             self.tree.insert("", "end", values=(
                 row.get("Symbol", ""),
+                row.get("State", ""),
+                row.get("ORB",""),
                 row.get("Opportunity", ""),
                 #row.get("Grade", ""),
+                row.get("WashStatus"),
                 row.get("VWAP", ""),
-                row.get("ORB_High", ""),
+
+                #row.get("ORB_High", ""),
                 row.get("Price", ""),
                 #row.get("ContGrade",""),
                 #row.get("Continuation", ""),
@@ -198,8 +206,8 @@ class ORBDashboard:
                 row.get("ATR",""),
                 #row.get("ORB_Low",""),
                 #row.get("ORB_Break",""),
-                row.get("Premarket",""),
-                row.get("EarlySignal",""),
+                #row.get("Premarket",""),
+                #row.get("EarlySignal",""),
                 row.get("Gain%", ""),
                 row.get("Score", ""),
                 row.get("Setup", ""),

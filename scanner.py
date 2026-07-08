@@ -23,6 +23,8 @@ from indicators import (
     near_hod
     )
 
+from trade_journal import TradeJournal
+
 class KaizenScanner:
 
     def __init__(self):
@@ -33,6 +35,7 @@ class KaizenScanner:
         }
 
         self.base_url = "https://data.alpaca.markets"
+        self.trade_journal = TradeJournal()
 
     # ==================================================
     # DATA
@@ -150,7 +153,7 @@ class KaizenScanner:
     # CORE ANALYSIS
     # ==================================================
 
-    def analyze_symbol(self, symbol, snapshot):
+    def analyze_symbol(self, symbol, snapshot, wash_list):
 
         def fail(reason, value=None):
             if DEBUG_MODE:
@@ -159,6 +162,8 @@ class KaizenScanner:
 
         latest = snapshot.get("latestTrade", {})
         daily = snapshot.get("dailyBar", {})
+
+
 
         price = latest.get("p", 0)
         open_price = daily.get("o", 0)
@@ -381,6 +386,27 @@ class KaizenScanner:
         setup_label = "+".join(setup) if setup else "NONE"
 
         # =========================
+        # STATE CLASSIFICATION
+        # =========================
+
+        state = "DEAD"
+
+        if continuation_score >= 80 and distance_from_hod <= 2:
+            state = "HOD ATTACK"
+
+        elif orb_break:
+            state = "ORB BREAKOUT"
+
+        elif current_vwap > 0 and price > current_vwap:
+            state = "VWAP RECLAIM"
+
+        elif distance_from_hod > 10:
+            state = "EXTENDED"
+
+        elif gain > 5:
+            state = "PULLBACK"
+
+        # =========================
         # TRADE PLAN
         # =========================
 
@@ -394,10 +420,45 @@ class KaizenScanner:
             "t3": round(price + risk * 3, 2)
         }
 
+        # =========================
+        # ORB STATUS
+        # =========================
+
+        orb_status = "UNKNOWN"
+
+        if price > orb_high:
+            orb_status = "ORB BREAKOUT"
+
+        elif price >= (orb_high * 0.98):
+            orb_status = "LOADING"
+
+        elif price > orb_low:
+            orb_status = "INSIDE ORB"
+
+        else:
+            orb_status = "FAILED"
+
+        # =========================
+        # WASH SALE STATUS
+        # =========================
+
+        wash_status = "CLEAR"
+        wash_days = 0
+
+        if symbol in wash_list:
+            wash_status = "⚠️ WASH RISK"
+
+            wash_days = wash_list[symbol]["days_remaining"]
+
         return {
             "Symbol": symbol,
+            #"State": state,
             "Grade": grade_score(score),
             "ContGrade": continuation_grade,
+
+            "WashStatus": wash_status,
+            "WashDays": wash_days,
+
             "Price": round(price, 2),
             "Gain%": round(gain, 2),
             "Score": score,
@@ -407,6 +468,8 @@ class KaizenScanner:
             "ATR": round(atr, 3),
             "VWAP": round(current_vwap, 2),
 
+            "State": state,
+            "ORB": orb_status,
             "ORB_High": round(orb_high, 2),
             "ORB_Low": round(orb_low, 2),
             "ORB_Break": "YES" if orb_break else "",
@@ -443,6 +506,7 @@ class KaizenScanner:
             return pd.DataFrame()
 
         snapshots = self.get_snapshot(symbols)
+        wash_list = self.trade_journal.get_wash_sale_symbols()
 
         results = []
 
@@ -450,7 +514,7 @@ class KaizenScanner:
 
             try:
                 snapshot = snapshots.get(symbol, {})
-                row = self.analyze_symbol(symbol, snapshot)
+                row = self.analyze_symbol(symbol, snapshot, wash_list)
 
                 if row:
                     results.append(row)
@@ -465,7 +529,7 @@ class KaizenScanner:
         df = pd.DataFrame(results)
 
         # Dashboard safety
-        for col in ["Grade", "ContGrade", "Setup"]:
+        for col in ["Grade", "ContGrade", "Setup", "State", "ORB", "WashStatus", "WashDays"]:
             if col not in df.columns:
                 df[col] = ""
 
@@ -480,12 +544,40 @@ class KaizenScanner:
 
         df["ContRank"] = df["ContGrade"].map(grade_rank)
 
+        #return (
+        #    df.sort_values(
+        #        ["Opportunity", "Score"],
+        #        ascending=False
+        #    )
+        #    .drop(columns=["ContRank"])
+        #)
+
+        state_rank = {
+            "HOD ATTACK": 6,
+            "ORB BREAKOUT": 5,
+            "VWAP RECLAIM": 4,
+            "PULLBACK": 3,
+            "EXTENDED": 2,
+            "DEAD": 1
+        }
+
+        orb_rank = {
+            "ORB BREAKOUT": 4,
+            "LOADING": 3,
+            "INSIDE ORB": 2,
+            "FAILED": 1
+        }
+
+        print(df[["Symbol", "State", "ORB", "ContGrade"]])
+        df["StateRank"] = df["State"].map(state_rank)
+        df["ORBRank"] = df["ORB"].map(orb_rank)
+
         return (
             df.sort_values(
-                ["Opportunity", "Score"],
+                ["StateRank", "ORBRank", "Continuation", "Score"],
                 ascending=False
             )
-            .drop(columns=["ContRank"])
+            .drop(columns=["StateRank", "ORBRank"])
         )
 
 
