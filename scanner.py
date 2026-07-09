@@ -392,26 +392,29 @@ class KaizenScanner:
         state = "DEAD"
 
         if continuation_score >= 80 and distance_from_hod <= 2:
-            state = "HOD ATTACK"
+            state = "🟢 HOD ATTACK"
 
         elif orb_break:
-            state = "ORB BREAKOUT"
-
-        elif current_vwap > 0 and price > current_vwap:
-            state = "VWAP RECLAIM"
-
-        elif distance_from_hod > 10:
-            state = "EXTENDED"
-
-        elif gain > 5:
-            state = "PULLBACK"
+            state = "🟢 ORB BREAKOUT"
 
         elif (
-            rvol >= 3
-            and distance_from_hod <= 3
-            and price > current_vwap
+                rvol >= 3
+                and distance_from_hod <= 3
+                and price > current_vwap
         ):
-            state = "LAUNCH PAD"
+            state = "🔵 LAUNCH PAD"
+
+        elif current_vwap > 0 and price > current_vwap:
+            state = "🔷 VWAP RECLAIM"
+
+        elif gain > 5:
+            state = "🟡 PULLBACK"
+
+        elif distance_from_hod > 10:
+            state = "🟠 EXTENDED"
+
+        else:
+            state = "🔴 DEAD"
 
         # =========================
         # TRADE PLAN
@@ -560,13 +563,13 @@ class KaizenScanner:
         #)
 
         state_rank = {
-            "HOD ATTACK": 7,
-            "ORB BREAKOUT": 6,
-            "LAUNCH PAD": 5,
-            "VWAP RECLAIM": 4,
-            "PULLBACK": 3,
-            "EXTENDED": 2,
-            "DEAD": 1
+            "🟢 HOD ATTACK": 7,
+            "🟢 ORB BREAKOUT": 6,
+            "🔵 LAUNCH PAD": 5,
+            "🔷 VWAP RECLAIM": 4,
+            "🟡 PULLBACK": 3,
+            "🟠 EXTENDED": 2,
+            "🔴 DEAD": 1
         }
 
         orb_rank = {
