@@ -11,7 +11,7 @@ import os
 from scanner import KaizenScanner
 from market import market_is_open
 
-timestamp = datetime.now().strftime("%H:%M:%S")
+
 
 
 class ORBDashboard:
@@ -47,7 +47,7 @@ class ORBDashboard:
 
     def trigger_alert(self, symbol, old_state, new_state, row):
 
-
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
         print(
             f"\n[{timestamp}] ALERT 🚨\n"
@@ -109,6 +109,86 @@ class ORBDashboard:
                 row.get("Continuation", ""),
                 row.get("Gain%", "")
             ])
+
+    def update_alert_stats(self):
+
+        filename = "alerts.csv"
+
+        if not os.path.exists(filename):
+            self.stats_label.config(
+                text="No Alert History"
+            )
+
+            return
+
+        try:
+
+            df = pd.read_csv(filename)
+
+
+        except Exception:
+
+            self.stats_label.config(
+                text="Error Loading Alerts"
+            )
+
+            return
+
+        if df.empty:
+            self.stats_label.config(
+                text="No Alerts Recorded"
+            )
+
+            return
+
+        # Today's alerts only
+        try:
+
+            df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+
+
+            today = pd.Timestamp.now().date()
+
+            df = df[
+                df["Timestamp"].dt.date == today
+                ]
+
+        except Exception:
+            pass
+
+        if df.empty:
+            self.stats_label.config(
+                text="No Alerts Today"
+            )
+
+            return
+
+
+
+        transitions = (
+                df["OldState"]
+                + " → "
+                + df["NewState"]
+        )
+
+        counts = transitions.value_counts()
+
+        stats_text = "Today's Alerts\n\n"
+
+        for transition, count in counts.head(5).items():
+            stats_text += (
+                f"{transition}: {count}\n"
+            )
+
+        stats_text += (
+            f"\nTotal Alerts: {len(df)}"
+        )
+
+        self.stats_label.config(
+            text=stats_text
+        )
+
+
 
     def __init__(self, root):
         self.root = root
@@ -209,6 +289,21 @@ class ORBDashboard:
             variable=self.hide_wash_var
         ).pack(side="left", padx=5)
 
+        self.stats_label = tk.Label(
+            self.root,
+            text="No Alert History",
+            justify="left",
+            anchor="w"
+        )
+
+        self.stats_label.pack(
+            fill="x",
+            padx=5,
+            pady=5
+        )
+
+
+
         # =========================
         # TABLE (RESULTS)
         # =========================
@@ -242,6 +337,8 @@ class ORBDashboard:
         ]
 
         self.tree = ttk.Treeview(root, columns=columns, show="headings")
+
+
 
         # ==================================
         # ROW COLORS
@@ -344,6 +441,8 @@ class ORBDashboard:
 
         self.update_table(df)
 
+        self.update_alert_stats()
+
         self.status_label.config(
             text=self.get_status_text()
         )
@@ -356,7 +455,10 @@ class ORBDashboard:
 
         self.root.title(
             f"Kaizen ORB Dashboard ({len(df)} setups)"
+
     )
+
+
 
     # =========================
     # UPDATE TABLE

@@ -22,6 +22,9 @@ WATCHLIST = [
     "LHSW",
     "TDTH",
     "BATL",
-    "LUCY"
+    "LUCY",
+    "SUNE",
+    "IOTR",
+    "SRXH"
 
 ]
