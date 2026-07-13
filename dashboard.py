@@ -49,6 +49,15 @@ class ORBDashboard:
 
         timestamp = datetime.now().strftime("%H:%M:%S")
 
+        current_time = time.time()
+
+        last_time = self.last_alert_time.get(symbol,0)
+
+        if (current_time - last_time < self.alert_cooldown):
+            return
+
+        self.last_alert_time[symbol] = current_time
+
         print(
             f"\n[{timestamp}] ALERT 🚨\n"
             f"{symbol}\n"
@@ -302,7 +311,8 @@ class ORBDashboard:
             pady=5
         )
 
-
+        self.last_alert_time = {}
+        self.alert_cooldown = 150
 
         # =========================
         # TABLE (RESULTS)
@@ -313,7 +323,8 @@ class ORBDashboard:
             "ORB",
             "Opportunity",
             #"Grade",
-            "WashStatus",
+            "Upside%",
+            #"WashStatus",
             "VWAP",
 
             #"ORB_High",
@@ -537,7 +548,8 @@ class ORBDashboard:
                     row.get("ORB", ""),
                     row.get("Opportunity", ""),
                     # row.get("Grade", ""),
-                    row.get("WashStatus", ""),
+                    row.get("Upside%",""),
+                    #row.get("WashStatus", ""),
                     row.get("VWAP", ""),
 
                     # row.get("ORB_High", ""),

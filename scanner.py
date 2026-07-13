@@ -205,7 +205,7 @@ class KaizenScanner:
         orb_break = (
                 price > orb_high
                 and vwap_ok
-                and rvol >= 2
+                and rvol >= 3
         )
 
 
@@ -249,6 +249,11 @@ class KaizenScanner:
 
         if high > 0:
             distance_from_hod = ((high - price) / high) * 100
+
+        upside_remaining = 0
+
+        if price > 0:
+            upside_remaining = round(((high - price) / price) * 100, 2)
 
         # HOD proximity score
         if distance_from_hod <= 2:
@@ -394,6 +399,14 @@ class KaizenScanner:
         if continuation_score >= 80 and distance_from_hod <= 2:
             state = "🟢 HOD ATTACK"
 
+        elif (
+                gain >= 15
+                and price > current_vwap
+                and continuation_score >= 70
+                and upside_remaining >= 5
+        ):
+            state = "🚀 TREND LEADER"
+
         elif orb_break:
             state = "🟢 ORB BREAKOUT"
 
@@ -460,12 +473,20 @@ class KaizenScanner:
 
             wash_days = wash_list[symbol]["days_remaining"]
 
+        if state == "🚀 TREND LEADER":
+            print(
+                f"TREND LEADER: {symbol} | "
+                f"Gain={gain:.1f}% | "
+                f"RVOL={rvol:.1f} | "
+                f"Upside={upside_remaining:.1f}%"
+            )
+
         return {
             "Symbol": symbol,
             #"State": state,
             "Grade": grade_score(score),
             "ContGrade": continuation_grade,
-
+            "Upside%": upside_remaining,
             "WashStatus": wash_status,
             "WashDays": wash_days,
 
@@ -563,6 +584,7 @@ class KaizenScanner:
         #)
 
         state_rank = {
+            "🚀 TREND LEADER": 8,
             "🟢 HOD ATTACK": 7,
             "🟢 ORB BREAKOUT": 6,
             "🔵 LAUNCH PAD": 5,

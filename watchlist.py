@@ -1,30 +1,17 @@
 WATCHLIST = [
-    "AZI",
-    "BIRD",
+    "GMM",
+    "FTRK",
+    "MIMI",
     "BYAH",
     "CLOV",
     "DXST",
     "EHGO",
-    "GMM",
-    "JRSH",
-    "LFS",
-    "NXR",
-    "RKLZ",
-    "SCAG",
-    "SUGP",
-    "QNRX"
-    "VTAK",
-    "XOS",
-    "CWD",
-    "DSY",
-    "LASE",
-    "CLRO",
-    "LHSW",
-    "TDTH",
-    "BATL",
     "LUCY",
     "SUNE",
     "IOTR",
-    "SRXH"
+    "SRXH",
+    "RPGL",
+    "SUNE",
+
 
 ]
