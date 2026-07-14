@@ -202,8 +202,10 @@ class KaizenScanner:
 
         vwap_ok = price > current_vwap
 
-        orb_break = (
-                price > orb_high
+        orb_break = price > orb_high
+
+        strong_breakout = (
+                orb_break
                 and vwap_ok
                 and rvol >= 3
         )
@@ -301,8 +303,9 @@ class KaizenScanner:
                 vol_score
         )
 
-        if orb_break:
+        if strong_breakout:
             continuation_score += 20
+
         early_signal = (
                 rvol >= 3
                 and price > current_vwap
@@ -326,8 +329,8 @@ class KaizenScanner:
         # RVOL Bonus
         opportunity += min(rvol * 5, 25)
 
-        # ORB Break
-        if orb_break:
+        # ORB Strong Breakout
+        if strong_breakout:
             opportunity += 20
 
         # Early Signal
@@ -409,6 +412,14 @@ class KaizenScanner:
 
         elif orb_break:
             state = "🟢 ORB BREAKOUT"
+
+        elif (
+                price > current_vwap
+                and rvol >= 2
+                and distance_from_hod <= 10
+                and not orb_break
+        ):
+            state = "🟣 ENTRY ALERT"
 
         elif (
                 rvol >= 3
@@ -503,7 +514,13 @@ class KaizenScanner:
             "ORB": orb_status,
             "ORB_High": round(orb_high, 2),
             "ORB_Low": round(orb_low, 2),
-            "ORB_Break": "YES" if orb_break else "",
+            "ORB_Break": (
+                "STRONG"
+                if strong_breakout
+                else "YES"
+                if orb_break
+                else ""
+            ),
 
             "Premarket": "YES" if premarket_candidate else "",
             "EarlySignal": "YES" if early_signal else "",
@@ -584,14 +601,15 @@ class KaizenScanner:
         #)
 
         state_rank = {
-            "🚀 TREND LEADER": 8,
-            "🟢 HOD ATTACK": 7,
+            "🟢 HOD ATTACK": 8,
+            "🚀 TREND LEADER": 7,
             "🟢 ORB BREAKOUT": 6,
-            "🔵 LAUNCH PAD": 5,
-            "🔷 VWAP RECLAIM": 4,
-            "🟡 PULLBACK": 3,
-            "🟠 EXTENDED": 2,
-            "🔴 DEAD": 1
+            "🟣 ENTRY ALERT": 5,
+            "🔵 LAUNCH PAD": 4,
+            "🔷 VWAP RECLAIM": 3,
+            "🟡 PULLBACK": 2,
+            "🟠 EXTENDED": 1,
+            "🔴 DEAD": 0
         }
 
         orb_rank = {

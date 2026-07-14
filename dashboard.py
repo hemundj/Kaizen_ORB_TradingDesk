@@ -221,29 +221,41 @@ class ORBDashboard:
         self.orb_var = tk.BooleanVar(value=True)
         self.launch_var = tk.BooleanVar(value=True)
         self.reclaim_var = tk.BooleanVar(value=True)
+        self.entry_var = tk.BooleanVar(value=True)
 
         tk.Checkbutton(
             control_frame,
             text="HOD Attack",
-            variable=self.hod_var
+            variable=self.hod_var,
+            command = self.run_scan
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="ORB Breakout",
-            variable=self.orb_var
+            variable=self.orb_var,
+            command=self.run_scan
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="Launch Pad",
-            variable=self.launch_var
+            variable=self.launch_var,
+            command=self.run_scan
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="VWAP Reclaim",
-            variable=self.reclaim_var
+            variable=self.reclaim_var,
+            command=self.run_scan
+        ).pack(side="left", padx=5)
+
+        tk.Checkbutton(
+            control_frame,
+            text="Entry Alert",
+            variable=self.entry_var,
+            command=self.run_scan
         ).pack(side="left", padx=5)
 
         tk.Label(control_frame, text="Scan Mode:").pack(side="left", padx=5)
@@ -390,6 +402,16 @@ class ORBDashboard:
             background="#ffe6e6"
         )
 
+        self.tree.tag_configure(
+            "entry",
+            background="#d6b3ff"
+        )
+
+        self.tree.tag_configure(
+            "leader",
+            background="#7dff7d"
+        )
+
         for col in columns:
             self.tree.heading(col, text=col)
             self.tree.column(col, width=90)
@@ -437,6 +459,9 @@ class ORBDashboard:
 
         if self.reclaim_var.get():
             allowed_states.append("VWAP RECLAIM")
+
+        if self.entry_var.get():
+            allowed_states.append("ENTRY ALERT")
 
         if allowed_states and not df.empty:
             df = df[
@@ -498,7 +523,9 @@ class ORBDashboard:
 
                 ("🟡 PULLBACK", "🟢 HOD ATTACK"),
 
-                ("🔵 LAUNCH PAD", "🟢 HOD ATTACK")
+                ("🔵 LAUNCH PAD", "🟢 HOD ATTACK"),
+
+                ("🔷 VWAP RECLAIM", "🟣 ENTRY ALERT"),
             ]
 
             if (
@@ -521,8 +548,14 @@ class ORBDashboard:
             if "HOD ATTACK" in state:
                 tag = "hod"
 
+            elif "TREND LEADER" in state:
+                tag = "leader"
+
             elif "ORB BREAKOUT" in state:
                 tag = "orb"
+
+            elif "ENTRY ALERT" in state:
+                tag = "entry"
 
             elif "LAUNCH PAD" in state:
                 tag = "launch"
@@ -539,6 +572,7 @@ class ORBDashboard:
             else:
                 tag = "dead"
 
+            print(symbol, tag, state)
             self.tree.insert(
                 "",
                 "end",
