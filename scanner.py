@@ -4,6 +4,7 @@ import pandas as pd
 from config import (
     API_KEY,
     SECRET_KEY,
+    DISCOVERY_MIN_PRICE,
     MIN_PRICE,
     MAX_PRICE,
     MIN_GAIN,
@@ -46,17 +47,35 @@ class KaizenScanner:
         url = f"{self.base_url}/v1beta1/screener/stocks/movers"
 
         try:
-            r = requests.get(url, headers=self.headers, params={"top": 50}, timeout=15)
+            r = requests.get(
+                url,
+                headers=self.headers,
+                params={"top": 50},
+                timeout=15
+            )
+
+            if DEBUG_MODE:
+                print("MOVERS STATUS:", r.status_code)
 
             if r.status_code != 200:
+                if DEBUG_MODE:
+                    print("MOVERS API ERROR:", r.text[:500])
                 return []
 
-            gainers = r.json().get("gainers", [])
+            data = r.json()
+            gainers = data.get("gainers", [])
+
+            if DEBUG_MODE:
+                print("RAW GAINERS COUNT:", len(gainers))
+
             clean_symbols = []
 
             for g in gainers:
 
                 symbol = g.get("symbol", "")
+
+                if not symbol:
+                    continue
 
                 if (
                         "." in symbol
@@ -68,9 +87,16 @@ class KaizenScanner:
 
                 clean_symbols.append(symbol)
 
+            if DEBUG_MODE:
+                print("CLEAN MOVERS COUNT:", len(clean_symbols))
+                print("CLEAN MOVERS:", clean_symbols)
+
             return clean_symbols
 
-        except Exception:
+        except Exception as e:
+            if DEBUG_MODE:
+                print("MOVERS EXCEPTION:", e)
+
             return []
 
     def get_snapshot(self, symbols):
@@ -174,8 +200,10 @@ class KaizenScanner:
         if price == 0 or open_price == 0:
             return fail("NO DATA", 0)
 
-        if not (MIN_PRICE <= price <= MAX_PRICE):
-            return fail("PRICE FILTER", price)
+        if not (DISCOVERY_MIN_PRICE <= price <= MAX_PRICE):
+            return fail("DISCOVERY PRICE FILTER", price)
+
+        trade_eligible = price >= MIN_PRICE
 
         bars = self.get_bars(symbol, limit = 20)
 
@@ -184,6 +212,9 @@ class KaizenScanner:
 
         df = pd.DataFrame(bars)
         print(symbol, "bars:", len(df))
+
+        if len(df) < 3:
+            return fail("Insufficient BARS", len(df))
 
         orb_high, orb_low = orb_levels(df)
 
@@ -237,8 +268,8 @@ class KaizenScanner:
         # FILTERS
         # =========================
 
-        if not (MIN_PRICE <= price <= MAX_PRICE):
-            return fail("PRICE FILTER", price)
+        #if not (DISCOVERY_MIN_PRICE <= price <= MAX_PRICE):
+        #    return fail("DISCOVERY PRICE FILTER", price)
 
         if gain < MIN_GAIN:
             return fail("GAIN FILTER", gain)
@@ -414,19 +445,32 @@ class KaizenScanner:
             state = "🟢 ORB BREAKOUT"
 
         elif (
-                price > current_vwap
-                and rvol >= 2
-                and distance_from_hod <= 10
+
+                rvol >= 3
+
+                and distance_from_hod <= 3
+
+                and price > current_vwap
+
                 and not orb_break
+
         ):
-            state = "🟣 ENTRY ALERT"
+
+            state = "🔵 LAUNCH PAD"
 
         elif (
-                rvol >= 3
-                and distance_from_hod <= 3
-                and price > current_vwap
+
+                price > current_vwap
+
+                and rvol >= 2
+
+                and distance_from_hod <= 10
+
+                and not orb_break
+
         ):
-            state = "🔵 LAUNCH PAD"
+
+            state = "🟣 ENTRY ALERT"
 
         elif current_vwap > 0 and price > current_vwap:
             state = "🔷 VWAP RECLAIM"
@@ -496,10 +540,11 @@ class KaizenScanner:
             "Symbol": symbol,
             #"State": state,
             "Grade": grade_score(score),
+            "TradeEligible": "YES" if trade_eligible else "WATCH",
             "ContGrade": continuation_grade,
             "Upside%": upside_remaining,
             "WashStatus": wash_status,
-            "WashDays": wash_days,
+            #"WashDays": wash_days,
 
             "Price": round(price, 2),
             "Gain%": round(gain, 2),
@@ -547,8 +592,29 @@ class KaizenScanner:
         elif mode == "movers":
             symbols = self.get_movers()
 
+
         elif mode == "combined":
-            symbols = list(set(WATCHLIST + self.get_movers()))
+
+            movers = self.get_movers()
+
+            symbols = list(dict.fromkeys(WATCHLIST + movers))
+
+            if DEBUG_MODE:
+                print("\n==============================")
+
+                print("SCAN MODE: COMBINED")
+
+                print("WATCHLIST COUNT:", len(WATCHLIST))
+
+                print("MOVERS COUNT:", len(movers))
+
+                print("MOVERS:", movers)
+
+                print("TOTAL UNIQUE COUNT:", len(symbols))
+
+                print("ALL SYMBOLS:", symbols)
+
+                print("==============================\n")
 
         else:
             return pd.DataFrame()

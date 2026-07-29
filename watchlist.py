@@ -11,7 +11,7 @@ WATCHLIST = [
     "IOTR",
     "SRXH",
     "RPGL",
-    "SUNE",
+
 
 
 ]

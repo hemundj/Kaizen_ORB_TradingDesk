@@ -260,12 +260,12 @@ class ORBDashboard:
 
         tk.Label(control_frame, text="Scan Mode:").pack(side="left", padx=5)
 
-        self.mode_var = tk.StringVar(value="watchlist")
+        self.mode_var = tk.StringVar(value="combined")
 
         mode_dropdown = ttk.Combobox(
             control_frame,
             textvariable=self.mode_var,
-            values=["watchlist", "movers", "combined"],
+            values=["combined", "movers", "watchlist"],
             state="readonly",
             width=15
         )
@@ -324,7 +324,7 @@ class ORBDashboard:
         )
 
         self.last_alert_time = {}
-        self.alert_cooldown = 150
+        self.alert_cooldown = 300
 
         # =========================
         # TABLE (RESULTS)
@@ -333,6 +333,7 @@ class ORBDashboard:
             "Symbol",
             "State",
             "ORB",
+            "TradeEligible",
             "Opportunity",
             #"Grade",
             "Upside%",
@@ -580,6 +581,7 @@ class ORBDashboard:
                     row.get("Symbol", ""),
                     row.get("State", ""),
                     row.get("ORB", ""),
+                    row.get("TradeEligible", ""),
                     row.get("Opportunity", ""),
                     # row.get("Grade", ""),
                     row.get("Upside%",""),
