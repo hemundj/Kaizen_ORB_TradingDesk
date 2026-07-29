@@ -33,18 +33,28 @@ class ORBDashboard:
                 text="Auto Refresh OFF"
             )
 
+            if self.refresh_job is not None:
+                self.root.after_cancel(self.refresh_job)
+                self.refresh_job = None
+
     def schedule_refresh(self):
 
-        if self.auto_refresh:
-            print("Auto Refresh Running")
+        if not self.auto_refresh:
+            return
 
-            self.run_scan()
+        # Prevent multiple refresh loops
+        if self.refresh_job is not None:
+            self.root.after_cancel(self.refresh_job)
+            self.refresh_job = None
 
-            self.root.after(
-                45000,
-                self.schedule_refresh
-            )
+        print("Auto Refresh Running")
 
+        self.run_scan()
+
+        self.refresh_job = self.root.after(
+            45000,
+            self.schedule_refresh
+        )
     def trigger_alert(self, symbol, old_state, new_state, row):
 
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -208,7 +218,9 @@ class ORBDashboard:
 
         self.previous_states = {}
 
-        self.auto_refresh = False
+        self.auto_refresh = True
+
+        self.refresh_job = None
 
         # =========================
         # TOP CONTROL PANEL
@@ -284,7 +296,7 @@ class ORBDashboard:
 
         self.auto_button = tk.Button(
             control_frame,
-            text="Auto Refresh OFF",
+            text="Auto Refresh ON" if self.auto_refresh else "Auto Refresh OFF",
             command=self.toggle_auto_refresh
         )
         self.auto_button.pack(side="left", padx=5)
@@ -418,6 +430,9 @@ class ORBDashboard:
             self.tree.column(col, width=90)
 
         self.tree.pack(fill="both", expand=True)
+
+        # Start auto-refresh on launch
+        self.schedule_refresh()
 
     # =========================
     # STATUS
