@@ -1,5 +1,9 @@
 import requests
 import pandas as pd
+import csv
+import os
+
+from datetime import datetime
 
 from config import (
     API_KEY,
@@ -38,13 +42,21 @@ class KaizenScanner:
         self.base_url = "https://data.alpaca.markets"
         self.trade_journal = TradeJournal()
 
+        # Track the previous mover list so we can detect entries and exits
+        self.previous_movers = set()
+        self.discovery_seen_date = datetime.now().date()
+        self.movers_initialized = False
+
     # ==================================================
     # DATA
     # ==================================================
 
     def get_movers(self):
 
-        url = f"{self.base_url}/v1beta1/screener/stocks/movers"
+        url = (
+            f"{self.base_url}"
+            f"/v1beta1/screener/stocks/movers"
+        )
 
         try:
             r = requests.get(
@@ -58,19 +70,38 @@ class KaizenScanner:
                 print("MOVERS STATUS:", r.status_code)
 
             if r.status_code != 200:
+
                 if DEBUG_MODE:
-                    print("MOVERS API ERROR:", r.text[:500])
+                    print(
+                        "MOVERS API ERROR:",
+                        r.text[:500]
+                    )
+
                 return []
 
             data = r.json()
+
             gainers = data.get("gainers", [])
 
+            if DEBUG_MODE and gainers:
+                print(
+                    "SAMPLE MOVER DATA:",
+                    gainers[0]
+                )
+
             if DEBUG_MODE:
-                print("RAW GAINERS COUNT:", len(gainers))
+                print(
+                    "RAW GAINERS COUNT:",
+                    len(gainers)
+                )
 
             clean_symbols = []
+            discovery_rows = []
 
-            for g in gainers:
+            for rank, g in enumerate(
+                    gainers,
+                    start=1
+            ):
 
                 symbol = g.get("symbol", "")
 
@@ -87,17 +118,266 @@ class KaizenScanner:
 
                 clean_symbols.append(symbol)
 
+                discovery_rows.append({
+                    "symbol": symbol,
+                    "rank": rank,
+                    "price": g.get("price", ""),
+                    "change": g.get("change", ""),
+                    "percent_change": g.get(
+                        "percent_change",
+                        ""
+                    )
+                })
+
             if DEBUG_MODE:
-                print("CLEAN MOVERS COUNT:", len(clean_symbols))
-                print("CLEAN MOVERS:", clean_symbols)
+                print(
+                    "CLEAN MOVERS COUNT:",
+                    len(clean_symbols)
+                )
+
+                print(
+                    "CLEAN MOVERS:",
+                    clean_symbols
+                )
+
+            print(
+                "ABOUT TO LOG DISCOVERY:",
+                len(discovery_rows)
+            )
+
+            self.log_discovery_timeline(
+                discovery_rows
+            )
+
+            print("DISCOVERY LOG FINISHED")
 
             return clean_symbols
 
         except Exception as e:
-            if DEBUG_MODE:
-                print("MOVERS EXCEPTION:", e)
 
-            return []
+            print(
+
+                "MOVERS EXCEPTION:",
+
+                type(e).__name__,
+
+                e
+
+            )
+
+        return []
+
+    def log_discovery_timeline(self, mover_rows):
+
+        project_folder = os.path.dirname(
+            os.path.abspath(__file__)
+        )
+
+        filename = os.path.join(
+            project_folder,
+            "discovery_timeline.csv"
+        )
+
+        print("CURRENT WORKING DIRECTORY:", os.getcwd())
+        print("DISCOVERY FILE PATH:", filename)
+
+        # Reset first-seen memory when the date changes
+        current_date = datetime.now().date()
+
+        if current_date != self.discovery_seen_date:
+            self.discovery_seen_symbols.clear()
+            self.discovery_seen_date = current_date
+
+        file_exists = os.path.isfile(filename)
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        try:
+            with open(
+                    filename,
+                    "a",
+                    newline="",
+                    encoding="utf-8"
+            ) as f:
+
+                writer = csv.writer(f)
+
+                if not file_exists:
+                    writer.writerow([
+                        "Timestamp",
+                        "Symbol",
+                        "Rank",
+                        "MoverPrice",
+                        "Change",
+                        "PercentChange",
+                        "FirstSeen",
+                        "Source"
+                    ])
+
+                for mover in mover_rows:
+                    symbol = mover.get("symbol", "")
+
+                    first_seen = (
+                            symbol not in self.discovery_seen_symbols
+                    )
+
+                    writer.writerow([
+                        timestamp,
+                        symbol,
+                        mover.get("rank", ""),
+                        mover.get("price", ""),
+                        mover.get("change", ""),
+                        mover.get("percent_change", ""),
+                        "YES" if first_seen else "",
+                        "ALPACA_MOVERS"
+                    ])
+
+                    self.discovery_seen_symbols.add(symbol)
+            print(
+                "DISCOVERY FILE EXISTS:",
+                os.path.exists(filename)
+            )
+
+            print(
+                "DISCOVERY FILE SIZE:",
+                os.path.getsize(filename)
+                if os.path.exists(filename)
+                else "MISSING"
+            )
+        except Exception as e:
+            if DEBUG_MODE:
+                print(
+                    "DISCOVERY TIMELINE ERROR:",
+                    e
+                )
+
+    def log_discovery_timeline(self, mover_rows):
+
+        project_folder = os.path.dirname(
+            os.path.abspath(__file__)
+        )
+
+        filename = os.path.join(
+            project_folder,
+            "discovery_events.csv"
+        )
+
+        current_date = datetime.now().date()
+
+        # Reset tracking at the beginning of a new day
+        if current_date != self.discovery_seen_date:
+            self.previous_movers = set()
+            self.discovery_seen_date = current_date
+            self.movers_initialized = False
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        # Build the current mover symbol set
+        current_movers = {
+            mover.get("symbol", "")
+            for mover in mover_rows
+            if mover.get("symbol")
+        }
+
+        # Keep lookup data for ranks, prices, and changes
+        mover_lookup = {
+            mover.get("symbol"): mover
+            for mover in mover_rows
+            if mover.get("symbol")
+        }
+
+        # On the first scan of the session, treat all current movers as entries
+        if not self.movers_initialized:
+            entered_symbols = current_movers
+            exited_symbols = set()
+            self.movers_initialized = True
+
+        else:
+            entered_symbols = (
+                    current_movers - self.previous_movers
+            )
+
+            exited_symbols = (
+                    self.previous_movers - current_movers
+            )
+
+        # Nothing changed, so do not write anything
+        if not entered_symbols and not exited_symbols:
+            self.previous_movers = current_movers
+            return
+
+        file_exists = os.path.isfile(filename)
+
+        try:
+            with open(
+                    filename,
+                    "a",
+                    newline="",
+                    encoding="utf-8"
+            ) as f:
+
+                writer = csv.writer(f)
+
+                if not file_exists:
+                    writer.writerow([
+                        "Timestamp",
+                        "Symbol",
+                        "Event",
+                        "Rank",
+                        "MoverPrice",
+                        "Change",
+                        "PercentChange",
+                        "Source"
+                    ])
+
+                # Log new entries
+                for symbol in sorted(entered_symbols):
+                    mover = mover_lookup.get(symbol, {})
+
+                    writer.writerow([
+                        timestamp,
+                        symbol,
+                        "ENTRY",
+                        mover.get("rank", ""),
+                        mover.get("price", ""),
+                        mover.get("change", ""),
+                        mover.get("percent_change", ""),
+                        "ALPACA_MOVERS"
+                    ])
+
+                # Log exits
+                for symbol in sorted(exited_symbols):
+                    writer.writerow([
+                        timestamp,
+                        symbol,
+                        "EXIT",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "ALPACA_MOVERS"
+                    ])
+
+            if DEBUG_MODE:
+                print(
+                    f"DISCOVERY EVENTS: "
+                    f"{len(entered_symbols)} entries, "
+                    f"{len(exited_symbols)} exits"
+                )
+
+        except Exception as e:
+            print(
+                "DISCOVERY EVENT ERROR:",
+                type(e).__name__,
+                e
+            )
+
+        # Save current list for comparison with the next scan
+        self.previous_movers = current_movers
 
     def get_snapshot(self, symbols):
 
@@ -485,6 +765,114 @@ class KaizenScanner:
             state = "🔴 DEAD"
 
         # =========================
+        # LIFECYCLE CLASSIFICATION
+        # =========================
+
+        lifecycle = "⚫ DORMANT"
+        lifecycle_rank = 0
+        action = "IGNORE"
+
+        vwap_extension = 0
+
+        if current_vwap > 0:
+            vwap_extension = (
+                                     (price - current_vwap)
+                                     / current_vwap
+                             ) * 100
+
+        # Stage 9 — Failed / Exit Zone
+        if (
+                price < current_vwap
+                and gain > 5
+                and distance_from_hod > 10
+        ):
+            lifecycle = "🔴 EXIT ZONE"
+            lifecycle_rank = 9
+            action = "AVOID / EXIT"
+
+        # Stage 8 — Extended
+        elif (
+                vwap_extension >= 8
+                or (
+                        gain >= 25
+                        and distance_from_hod <= 2
+                )
+        ):
+            lifecycle = "🟠 EXTENDED"
+            lifecycle_rank = 8
+            action = "Wait"
+
+        # Stage 7 — Trend Leader
+        elif (
+                gain >= 15
+                and price > current_vwap
+                and continuation_score >= 70
+                and rvol >= 2
+        ):
+            lifecycle = "🚀 TREND LEADER"
+            lifecycle_rank = 7
+            action = "Hold"
+
+        # Stage 6 — HOD Attack
+        elif (
+                continuation_score >= 80
+                and distance_from_hod <= 2
+        ):
+            lifecycle = "🟢 HOD ATTACK"
+            lifecycle_rank = 6
+            action = "Add"
+
+        # Stage 5 — ORB Confirmed
+        elif (
+                strong_breakout
+        ):
+            lifecycle = "✅ ORB Confirmed"
+            lifecycle_rank = 5
+            action = "BUY"
+
+        # Stage 4 — Entry Alert
+        elif (
+                price > current_vwap
+                and rvol >= 2
+                and distance_from_hod <= 10
+                and not orb_break
+                and vwap_extension <= 6
+        ):
+            lifecycle = "🟣 Entry Alert"
+            lifecycle_rank = 4
+            action = "Buy"
+
+        # Stage 3 — Launch Pad
+        elif (
+                price > current_vwap
+                and rvol >= 1.5
+                and distance_from_hod <= 5
+                and not orb_break
+        ):
+            lifecycle = "🔵 Launch Pad"
+            lifecycle_rank = 3
+            action = "PREPARE"
+
+        # Stage 2 — Momentum Building
+        elif (
+                price > current_vwap
+                and rvol >= 1
+                and gain >= 3
+        ):
+            lifecycle = "🟡 Momentum"
+            lifecycle_rank = 2
+            action = "Prepare"
+
+        # Stage 1 — Discovery
+        elif (
+                gain >= 3
+                or volume >= 100_000
+        ):
+            lifecycle = "⚪ Discovery"
+            lifecycle_rank = 1
+            action = "Watch"
+
+        # =========================
         # TRADE PLAN
         # =========================
 
@@ -543,7 +931,12 @@ class KaizenScanner:
             "TradeEligible": "YES" if trade_eligible else "WATCH",
             "ContGrade": continuation_grade,
             "Upside%": upside_remaining,
-            "WashStatus": wash_status,
+            "Lifecycle": lifecycle,
+            "LifecycleRank": lifecycle_rank,
+            "Action": action,
+            "VWAP_Ext%": round(vwap_extension, 2),
+
+            #"WashStatus": wash_status,
             #"WashDays": wash_days,
 
             "Price": round(price, 2),
@@ -643,7 +1036,7 @@ class KaizenScanner:
         df = pd.DataFrame(results)
 
         # Dashboard safety
-        for col in ["Grade", "ContGrade", "Setup", "State", "ORB", "WashStatus", "WashDays"]:
+        for col in ["Grade", "ContGrade", "Setup", "State", "Lifecycle", "LifecycleRank", "Action", "VWAP_Ext%","ORB", "WashStatus", "WashDays"]:
             if col not in df.columns:
                 df[col] = ""
 
@@ -691,10 +1084,21 @@ class KaizenScanner:
 
         return (
             df.sort_values(
-                ["StateRank", "ORBRank", "Continuation", "Score"],
+                [
+                    "LifecycleRank",
+                    "Continuation",
+                    "Opportunity",
+                    "Score"
+                ],
                 ascending=False
             )
-            .drop(columns=["StateRank", "ORBRank"])
+            .drop(
+                columns=[
+                    "StateRank",
+                    "ORBRank"
+                ],
+                errors="ignore"
+            )
         )
 
 

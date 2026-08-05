@@ -343,19 +343,22 @@ class ORBDashboard:
         # =========================
         columns = [
             "Symbol",
+            "Lifecycle",
+            "Action",
             "State",
             "ORB",
             "TradeEligible",
             "Opportunity",
             #"Grade",
             "Upside%",
+            "VWAP_Ext%",
             #"WashStatus",
             "VWAP",
 
             #"ORB_High",
             "Price",
             #"ContGrade",
-            #"Continuation",
+            "Continuation",
             "RVOL",
             "ATR",
             #"ORB_Low",
@@ -428,6 +431,50 @@ class ORBDashboard:
         for col in columns:
             self.tree.heading(col, text=col)
             self.tree.column(col, width=90)
+
+        # -------------------------
+        # Custom column widths
+        # -------------------------
+
+        self.tree.column("Symbol", width=70)
+
+        self.tree.column("Lifecycle", width=180)
+
+        self.tree.column("Action", width=140)
+
+        self.tree.column("State", width=150)
+
+        self.tree.column("ORB", width=120)
+
+        self.tree.column("TradeEligible", width=90)
+
+        self.tree.column("Opportunity", width=90)
+
+        self.tree.column("Upside%", width=75)
+
+        self.tree.column("VWAP_Ext%", width=90)
+
+        self.tree.column("VWAP", width=70)
+
+        self.tree.column("Price", width=70)
+
+        self.tree.column("RVOL", width=70)
+
+        self.tree.column("ATR", width=70)
+
+        self.tree.column("Gain%", width=75)
+
+        self.tree.column("Score", width=70)
+
+        self.tree.column("Setup", width=110)
+
+        self.tree.column("Entry", width=70)
+
+        self.tree.column("Stop", width=70)
+
+        self.tree.column("T1", width=70)
+
+        self.tree.column("T2", width=70)
 
         self.tree.pack(fill="both", expand=True)
 
@@ -557,33 +604,37 @@ class ORBDashboard:
 
             self.previous_states[symbol] = current_state
 
+            lifecycle = row.get("Lifecycle", "")
             state = row.get("State", "")
 
             tag = ""
 
-            if "HOD ATTACK" in state:
-                tag = "hod"
-
-            elif "TREND LEADER" in state:
-                tag = "leader"
-
-            elif "ORB BREAKOUT" in state:
-                tag = "orb"
-
-            elif "ENTRY ALERT" in state:
+            if "ENTRY ALERT" in lifecycle:
                 tag = "entry"
 
-            elif "LAUNCH PAD" in state:
+            elif "ORB CONFIRMED" in lifecycle:
+                tag = "orb"
+
+            elif "HOD ATTACK" in lifecycle:
+                tag = "hod"
+
+            elif "TREND LEADER" in lifecycle:
+                tag = "leader"
+
+            elif "EXTENDED" in lifecycle:
+                tag = "extended"
+
+            elif "EXIT ZONE" in lifecycle:
+                tag = "dead"
+
+            elif "LAUNCH PAD" in lifecycle:
                 tag = "launch"
 
-            elif "VWAP RECLAIM" in state:
+            elif "MOMENTUM BUILDING" in lifecycle:
                 tag = "reclaim"
 
-            elif "PULLBACK" in state:
-                tag = "pullback"
-
-            elif "EXTENDED" in state:
-                tag = "extended"
+            elif "DISCOVERY" in lifecycle:
+                tag = "reclaim"
 
             else:
                 tag = "dead"
@@ -594,12 +645,16 @@ class ORBDashboard:
                 "end",
                 values=(
                     row.get("Symbol", ""),
+                    row.get("Lifecycle", ""),
+                    row.get("Action", ""),
                     row.get("State", ""),
                     row.get("ORB", ""),
                     row.get("TradeEligible", ""),
                     row.get("Opportunity", ""),
                     # row.get("Grade", ""),
+                    row.get("Continuation", ""),
                     row.get("Upside%",""),
+                    row.get("VWAP_Ext%", ""),
                     #row.get("WashStatus", ""),
                     row.get("VWAP", ""),
 
