@@ -3,7 +3,8 @@ import pandas as pd
 import csv
 import os
 
-from datetime import datetime
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 from config import (
     API_KEY,
@@ -13,7 +14,8 @@ from config import (
     MAX_PRICE,
     MIN_GAIN,
     MIN_SCORE,
-    DEBUG_MODE
+    DEBUG_MODE,
+    ENABLE_TRUE_RVOL,
 )
 
 from watchlist import WATCHLIST
@@ -23,14 +25,16 @@ from indicators import (
     calc_vwap,
     orb_levels,
     volume_spike,
-    calculate_rvol,
+    calculate_volume_ratio,
+    calculate_intraday_rvol,
     rvol_score,
     near_hod
-    )
+)
 
 from trade_journal import TradeJournal
 
 class KaizenScanner:
+
 
     def __init__(self):
 
@@ -167,91 +171,6 @@ class KaizenScanner:
 
         return []
 
-    def log_discovery_timeline(self, mover_rows):
-
-        project_folder = os.path.dirname(
-            os.path.abspath(__file__)
-        )
-
-        filename = os.path.join(
-            project_folder,
-            "discovery_timeline.csv"
-        )
-
-        print("CURRENT WORKING DIRECTORY:", os.getcwd())
-        print("DISCOVERY FILE PATH:", filename)
-
-        # Reset first-seen memory when the date changes
-        current_date = datetime.now().date()
-
-        if current_date != self.discovery_seen_date:
-            self.discovery_seen_symbols.clear()
-            self.discovery_seen_date = current_date
-
-        file_exists = os.path.isfile(filename)
-
-        timestamp = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        try:
-            with open(
-                    filename,
-                    "a",
-                    newline="",
-                    encoding="utf-8"
-            ) as f:
-
-                writer = csv.writer(f)
-
-                if not file_exists:
-                    writer.writerow([
-                        "Timestamp",
-                        "Symbol",
-                        "Rank",
-                        "MoverPrice",
-                        "Change",
-                        "PercentChange",
-                        "FirstSeen",
-                        "Source"
-                    ])
-
-                for mover in mover_rows:
-                    symbol = mover.get("symbol", "")
-
-                    first_seen = (
-                            symbol not in self.discovery_seen_symbols
-                    )
-
-                    writer.writerow([
-                        timestamp,
-                        symbol,
-                        mover.get("rank", ""),
-                        mover.get("price", ""),
-                        mover.get("change", ""),
-                        mover.get("percent_change", ""),
-                        "YES" if first_seen else "",
-                        "ALPACA_MOVERS"
-                    ])
-
-                    self.discovery_seen_symbols.add(symbol)
-            print(
-                "DISCOVERY FILE EXISTS:",
-                os.path.exists(filename)
-            )
-
-            print(
-                "DISCOVERY FILE SIZE:",
-                os.path.getsize(filename)
-                if os.path.exists(filename)
-                else "MISSING"
-            )
-        except Exception as e:
-            if DEBUG_MODE:
-                print(
-                    "DISCOVERY TIMELINE ERROR:",
-                    e
-                )
 
     def log_discovery_timeline(self, mover_rows):
 
@@ -455,6 +374,46 @@ class KaizenScanner:
         except Exception:
             return []
 
+    def get_daily_bars(
+            self,
+            symbol,
+            limit=20
+    ):
+
+        url = (
+            f"{self.base_url}"
+            f"/v2/stocks/{symbol}/bars"
+        )
+
+        params = {
+            "timeframe": "1Day",
+            "limit": limit,
+            "feed": "iex"
+        }
+
+        try:
+            response = requests.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=15
+            )
+
+            if response.status_code != 200:
+                return []
+
+            return response.json().get("bars", [])
+
+        except Exception as error:
+            if DEBUG_MODE:
+                print(
+                    symbol,
+                    "DAILY BAR ERROR:",
+                    error
+                )
+
+            return []
+
     # ==================================================
     # CORE ANALYSIS
     # ==================================================
@@ -486,6 +445,57 @@ class KaizenScanner:
         trade_eligible = price >= MIN_PRICE
 
         bars = self.get_bars(symbol, limit = 20)
+        #daily_bars = self.get_daily_bars(symbol, limit=20)
+
+        #central_now = datetime.now(
+        #    ZoneInfo("America/Chicago")
+        #)
+
+        #market_open = central_now.replace(
+        #    hour=8,
+        #    minute=30,
+        #    second=0,
+        #    microsecond=0
+        #)
+
+        #market_close = central_now.replace(
+        #    hour=15,
+        #    minute=0,
+        #    second=0,
+        #    microsecond=0
+        #)
+
+        #session_seconds = (
+        #        market_close - market_open
+        #).total_seconds()
+
+        #elapsed_seconds = (
+         #       central_now - market_open
+        #).total_seconds()
+
+        #elapsed_market_fraction = max(
+        #    0.01,
+        #    min(
+        #        elapsed_seconds / session_seconds,
+        #        1.0
+        #    )
+        #)
+
+       #average_daily_volume = 0
+
+        #if daily_bars:
+
+        #    completed_daily_volumes = [
+        #        float(bar.get("v", 0))
+        #        for bar in daily_bars[:-1]
+        #        if float(bar.get("v", 0)) > 0
+        #    ]
+
+            #if completed_daily_volumes:
+            #    average_daily_volume = (
+            #            sum(completed_daily_volumes)
+            #            / len(completed_daily_volumes)
+            #    )
 
         if not bars:
             return fail("NO BARS")
@@ -496,9 +506,71 @@ class KaizenScanner:
         if len(df) < 3:
             return fail("Insufficient BARS", len(df))
 
+        average_daily_volume = 0
+        elapsed_market_fraction = 0
+
+        if ENABLE_TRUE_RVOL:
+
+            daily_bars = self.get_daily_bars(
+                symbol,
+                limit=20
+            )
+
+            central_now = datetime.now(
+                ZoneInfo("America/Chicago")
+            )
+
+            market_open = central_now.replace(
+                hour=8,
+                minute=30,
+                second=0,
+                microsecond=0
+            )
+
+            market_close = central_now.replace(
+                hour=15,
+                minute=0,
+                second=0,
+                microsecond=0
+            )
+
+            session_seconds = (
+                    market_close - market_open
+            ).total_seconds()
+
+            elapsed_seconds = (
+                    central_now - market_open
+            ).total_seconds()
+
+            elapsed_market_fraction = max(
+                0.01,
+                min(
+                    elapsed_seconds / session_seconds,
+                    1.0
+                )
+            )
+
+            if daily_bars:
+
+                completed_daily_volumes = [
+                    float(bar.get("v", 0))
+                    for bar in daily_bars[:-1]
+                    if float(bar.get("v", 0)) > 0
+                ]
+
+                if completed_daily_volumes:
+                    average_daily_volume = (
+                            sum(completed_daily_volumes)
+                            / len(completed_daily_volumes)
+                    )
+
         orb_high, orb_low = orb_levels(df)
 
-        rvol = calculate_rvol(df)
+        volume_ratio = calculate_volume_ratio(df)
+
+        # Temporary compatibility until true intraday RVOL
+        # receives historical average-volume data
+        rvol = volume_ratio
 
         atr = calc_atr(df)
         print(symbol, "RVOL =", rvol)
@@ -721,7 +793,7 @@ class KaizenScanner:
         ):
             state = "🚀 TREND LEADER"
 
-        elif orb_break:
+        elif strong_breakout:
             state = "🟢 ORB BREAKOUT"
 
         elif (
@@ -892,8 +964,11 @@ class KaizenScanner:
 
         orb_status = "UNKNOWN"
 
-        if price > orb_high:
-            orb_status = "ORB BREAKOUT"
+        if strong_breakout:
+            orb_status = "ORB CONFIRMED"
+
+        elif orb_break:
+            orb_status = "ORB DETECTED"
 
         elif price >= (orb_high * 0.98):
             orb_status = "LOADING"
@@ -944,6 +1019,7 @@ class KaizenScanner:
             "Score": score,
             "Continuation": continuation_score,
             "Opportunity": opportunity,
+            "VolumeRatio": round(volume_ratio, 2),
             "RVOL": round(rvol, 2),
             "ATR": round(atr, 3),
             "VWAP": round(current_vwap, 2),
@@ -1072,7 +1148,8 @@ class KaizenScanner:
         }
 
         orb_rank = {
-            "ORB BREAKOUT": 4,
+            "ORB CONFIRMED": 5,
+            "ORB DETECTED": 4,
             "LOADING": 3,
             "INSIDE ORB": 2,
             "FAILED": 1

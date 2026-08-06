@@ -49,21 +49,46 @@ def volume_spike(df):
 
     return df["v"].iloc[-1] > avg * 2
 
-def calculate_rvol(df, lookback=5):
+def calculate_volume_ratio(df, lookback=5):
 
-
-    if len(df) < lookback:
+    if len(df) < lookback + 1:
         return 0
 
     current_vol = df["v"].iloc[-1]
-
     avg_vol = df["v"].iloc[-lookback:-1].mean()
 
     if avg_vol <= 0:
         return 0
 
-    return round(current_vol / avg_vol, 2)
+    return current_vol / avg_vol
 
+def calculate_intraday_rvol(
+        current_session_volume,
+        average_daily_volume,
+        elapsed_market_fraction
+):
+
+    if average_daily_volume is None:
+        return 0
+
+    if average_daily_volume <= 0:
+        return 0
+
+    if elapsed_market_fraction <= 0:
+        return 0
+
+    expected_volume_so_far = (
+        average_daily_volume
+        * elapsed_market_fraction
+    )
+
+    if expected_volume_so_far <= 0:
+        return 0
+
+    return (
+        current_session_volume
+        / expected_volume_so_far
+    )
 
 def rvol_score(rvol):
 

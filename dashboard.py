@@ -605,9 +605,12 @@ class ORBDashboard:
             self.previous_states[symbol] = current_state
 
             lifecycle = row.get("Lifecycle", "")
-            state = row.get("State", "")
+            state = str(row.get("State", "")).upper()
+            lifecycle = str(row.get("Lifecycle", "")).upper()
 
             tag = ""
+
+            # ----- Lifecycle colors -----
 
             if "ENTRY ALERT" in lifecycle:
                 tag = "entry"
@@ -630,11 +633,28 @@ class ORBDashboard:
             elif "LAUNCH PAD" in lifecycle:
                 tag = "launch"
 
-            elif "MOMENTUM BUILDING" in lifecycle:
+            elif "MOMENTUM" in lifecycle:
                 tag = "reclaim"
 
             elif "DISCOVERY" in lifecycle:
                 tag = "reclaim"
+
+            # ----- Fallback to old State -----
+
+            elif "HOD ATTACK" in state:
+                tag = "hod"
+
+            elif "ORB BREAKOUT" in state:
+                tag = "orb"
+
+            elif "VWAP RECLAIM" in state:
+                tag = "reclaim"
+
+            elif "PULLBACK" in state:
+                tag = "pullback"
+
+            elif "EXTENDED" in state:
+                tag = "extended"
 
             else:
                 tag = "dead"
