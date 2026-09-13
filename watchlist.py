@@ -1,17 +1,24 @@
 WATCHLIST = [
-    "GMM",
-    "FTRK",
-    "MIMI",
-    "BYAH",
-    "CLOV",
-    "DXST",
-    "EHGO",
     "LUCY",
-    "SUNE",
-    "IOTR",
-    "SRXH",
-    "RPGL",
+    "WNM",
+    "PMI",
+    "VNRX",
+    "MERC",
+    "YAAS",
+    "OKTG",
+    "NCPL",
+    "MIMI",
+    "WKSP",
+    "CRMG",
+    "GXAI",
+    "DAIC",
+    "BTCT",
 
 
 
 ]
+
+
+
+
+

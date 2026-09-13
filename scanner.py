@@ -18,6 +18,7 @@ from config import (
     ENABLE_TRUE_RVOL,
 )
 
+from fundamentals import FundamentalsEngine
 from watchlist import WATCHLIST
 from grading import grade_score
 from indicators import (
@@ -26,6 +27,7 @@ from indicators import (
     orb_levels,
     volume_spike,
     calculate_volume_ratio,
+    calculate_float_turnover,
     calculate_intraday_rvol,
     rvol_score,
     near_hod
@@ -34,6 +36,103 @@ from indicators import (
 from trade_journal import TradeJournal
 
 class KaizenScanner:
+
+    def log_alert_path_audit(
+            self,
+            symbol,
+            price,
+            gain,
+            rvol,
+            current_vwap,
+            vwap_ok,
+            vwap_extension,
+            high,
+            distance_from_hod,
+            upside_remaining,
+            orb_high,
+            orb_break,
+            strong_breakout,
+            early_signal,
+            continuation_score,
+            score,
+            state,
+            lifecycle,
+            action,
+            momentum_ignition,
+            ignition_reason,
+            alert_eligible,
+            alert_blocked_reason
+    ):
+
+        filename = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "alert_path_audit.csv"
+        )
+
+        file_exists = os.path.isfile(filename)
+
+        with open(
+                filename,
+                "a",
+                newline="",
+                encoding="utf-8"
+        ) as f:
+            writer = csv.writer(f)
+
+            if not file_exists:
+                writer.writerow([
+                    "Timestamp",
+                    "Symbol",
+                    "Price",
+                    "GainPercent",
+                    "RVOL",
+                    "VWAP",
+                    "AboveVWAP",
+                    "VWAP_ExtPercent",
+                    "HOD",
+                    "HOD_DistPercent",
+                    "UpsideRemainingPercent",
+                    "ORB_High",
+                    "ORB_Break",
+                    "StrongBreakout",
+                    "EarlySignal",
+                    "Continuation",
+                    "Score",
+                    "State",
+                    "Lifecycle",
+                    "Action",
+                    "MomentumIgnition",
+                    "IgnitionReason",
+                    "AlertEligible",
+                    "BlockedReason"
+                ])
+
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                symbol,
+                round(price, 4),
+                round(gain, 2),
+                round(rvol, 2),
+                round(current_vwap, 4),
+                vwap_ok,
+                round(vwap_extension, 2),
+                round(high, 4),
+                round(distance_from_hod, 2),
+                round(upside_remaining, 2),
+                round(orb_high, 4),
+                orb_break,
+                strong_breakout,
+                early_signal,
+                continuation_score,
+                round(score, 2),
+                state,
+                lifecycle,
+                action,
+                momentum_ignition,
+                ignition_reason,
+                alert_eligible,
+                alert_blocked_reason
+            ])
 
 
     def __init__(self):
@@ -45,11 +144,159 @@ class KaizenScanner:
 
         self.base_url = "https://data.alpaca.markets"
         self.trade_journal = TradeJournal()
+        self.fundamentals = FundamentalsEngine()
 
         # Track the previous mover list so we can detect entries and exits
         self.previous_movers = set()
         self.discovery_seen_date = datetime.now().date()
         self.movers_initialized = False
+
+        # Momentum Ignition memory.  This lets Kaizen remember when a ticker
+        # leaves the Alpaca mover list and then re-enters at a higher price /
+        # better rank.  That re-entry behavior can be an early momentum clue.
+        self.mover_history = {}
+
+        # ==================================================
+        # MANUAL / TOS RADAR
+        # ==================================================
+
+        # Symbols manually added from TOS Radar or another
+        # external discovery source.
+        #
+        # These remain active until manually removed or
+        # Kaizen is closed.
+        self.manual_symbols = set()
+
+    # ==================================================
+    # MANUAL RADAR
+    # ==================================================
+
+    def add_manual_symbol(
+            self,
+            symbol,
+            source="MANUAL_TOS"
+    ):
+        symbol = str(symbol).strip().upper()
+
+        if not symbol:
+            return False
+
+        # Basic symbol validation
+        if not symbol.replace("-", "").isalnum():
+            print(
+                f"MANUAL RADAR: Invalid symbol '{symbol}'"
+            )
+            return False
+
+        # Already being manually monitored
+        if symbol in self.manual_symbols:
+            print(
+                f"MANUAL RADAR: {symbol} already active"
+            )
+            return False
+
+        self.manual_symbols.add(symbol)
+
+        self.log_manual_discovery(
+            symbol=symbol,
+            event="ENTRY",
+            source=source
+        )
+
+        print(
+            f"\nMANUAL RADAR ADDED: {symbol}"
+            f" | Source={source}"
+        )
+
+        return True
+
+    def remove_manual_symbol(
+            self,
+            symbol,
+            source="MANUAL_TOS"
+    ):
+        symbol = str(symbol).strip().upper()
+
+        if symbol not in self.manual_symbols:
+            return False
+
+        self.manual_symbols.remove(symbol)
+
+        self.log_manual_discovery(
+            symbol=symbol,
+            event="EXIT",
+            source=source
+        )
+
+        print(
+            f"\nMANUAL RADAR REMOVED: {symbol}"
+        )
+
+        return True
+
+    def get_manual_symbols(self):
+
+        return sorted(self.manual_symbols)
+
+    def log_manual_discovery(
+            self,
+            symbol,
+            event,
+            source="MANUAL_TOS"
+    ):
+
+        filename = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "discovery_events.csv"
+        )
+
+        file_exists = os.path.isfile(filename)
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        try:
+
+            with open(
+                    filename,
+                    "a",
+                    newline="",
+                    encoding="utf-8"
+            ) as f:
+
+                writer = csv.writer(f)
+
+                if not file_exists:
+                    writer.writerow([
+                        "Timestamp",
+                        "Symbol",
+                        "Event",
+                        "Rank",
+                        "MoverPrice",
+                        "Change",
+                        "PercentChange",
+                        "Source"
+                    ])
+
+                writer.writerow([
+                    timestamp,
+                    symbol,
+                    event,
+                    "",
+                    "",
+                    "",
+                    "",
+                    source
+                ])
+
+        except Exception as e:
+
+            print(
+                "MANUAL DISCOVERY LOG ERROR:",
+                type(e).__name__,
+                e
+            )
 
     # ==================================================
     # DATA
@@ -223,6 +470,67 @@ class KaizenScanner:
             exited_symbols = (
                     self.previous_movers - current_movers
             )
+
+        # Update Momentum Ignition context before writing the discovery log.
+        # A symbol that re-enters the mover list after previously appearing can
+        # carry useful information even if its RVOL proxy is still below 2.0.
+        for symbol in current_movers:
+            mover = mover_lookup.get(symbol, {})
+            current_rank = mover.get("rank", 0) or 0
+            current_price = mover.get("price", 0) or 0
+
+            try:
+                current_rank = int(current_rank)
+            except (TypeError, ValueError):
+                current_rank = 0
+
+            try:
+                current_price = float(current_price)
+            except (TypeError, ValueError):
+                current_price = 0
+
+            history = self.mover_history.setdefault(symbol, {
+                "last_entry_price": 0.0,
+                "last_entry_rank": 0,
+                "reentry_count": 0,
+                "reentered_recently": False,
+                "entry_price_change_pct": 0.0,
+                "rank_improvement": 0,
+                "ignition_timestamp": None,
+            })
+
+            # Only calculate re-entry acceleration when the symbol has newly
+            # returned to the mover list.
+            if symbol in entered_symbols:
+                previous_entry_price = history.get("last_entry_price", 0) or 0
+                previous_entry_rank = history.get("last_entry_rank", 0) or 0
+
+                is_reentry = previous_entry_price > 0
+
+                if is_reentry:
+                    history["reentry_count"] += 1
+                    history["reentered_recently"] = True
+                    history["ignition_timestamp"] = datetime.now()
+
+                    if current_price > 0 and previous_entry_price > 0:
+                        history["entry_price_change_pct"] = round(
+                            ((current_price - previous_entry_price)
+                             / previous_entry_price) * 100,
+                            2
+                        )
+
+                    if current_rank > 0 and previous_entry_rank > 0:
+                        # Positive = improved toward rank #1.
+                        history["rank_improvement"] = (
+                            previous_entry_rank - current_rank
+                        )
+                else:
+                    history["reentered_recently"] = False
+                    history["entry_price_change_pct"] = 0.0
+                    history["rank_improvement"] = 0
+
+                history["last_entry_price"] = current_price
+                history["last_entry_rank"] = current_rank
 
         # Nothing changed, so do not write anything
         if not entered_symbols and not exited_symbols:
@@ -436,6 +744,8 @@ class KaizenScanner:
         low = daily.get("l", 0)
         volume = daily.get("v", 0)
 
+
+
         if price == 0 or open_price == 0:
             return fail("NO DATA", 0)
 
@@ -443,6 +753,27 @@ class KaizenScanner:
             return fail("DISCOVERY PRICE FILTER", price)
 
         trade_eligible = price >= MIN_PRICE
+
+        float_shares = 0
+        shares_outstanding = 0
+        market_cap = 0
+        free_float_pct = 0
+        float_turnover = 0
+
+#        fundamentals = (self.fundamentals.get_symbol_fundamentals(symbol))
+
+#        float_shares = fundamentals.get( "Float", 0)
+
+ #       shares_outstanding = fundamentals.get("SharesOutstanding", 0)
+
+  #      market_cap = fundamentals.get("MarketCap", 0)
+
+   #     free_float_pct = fundamentals.get( "FreeFloatPct", 0)
+
+    #    float_turnover = calculate_float_turnover(
+    #        volume,
+    #        float_shares
+    #    )
 
         bars = self.get_bars(symbol, limit = 20)
         #daily_bars = self.get_daily_bars(symbol, limit=20)
@@ -760,6 +1091,105 @@ class KaizenScanner:
             return fail("SCORE FILTER", score)
 
         # =========================
+        # MOMENTUM IGNITION
+        # =========================
+
+        # VWAP extension is calculated here (rather than only in Lifecycle) so
+        # Momentum Ignition can avoid flagging names that are already too far
+        # extended from VWAP.
+        vwap_extension = 0
+
+        if current_vwap > 0:
+            vwap_extension = (
+                ((price - current_vwap) / current_vwap) * 100
+            )
+
+        mover_context = self.mover_history.get(symbol, {})
+
+        mover_reentry = bool(
+            mover_context.get("reentered_recently", False)
+        )
+        mover_price_accel = float(
+            mover_context.get("entry_price_change_pct", 0) or 0
+        )
+        mover_rank_improvement = int(
+            mover_context.get("rank_improvement", 0) or 0
+        )
+
+        # Re-entry signals are considered fresh for ten minutes.  This keeps an
+        # old mover-list event from influencing the stock for the entire day.
+        ignition_timestamp = mover_context.get("ignition_timestamp")
+        mover_reentry_fresh = False
+
+        if mover_reentry and ignition_timestamp is not None:
+            ignition_age_seconds = (
+                datetime.now() - ignition_timestamp
+            ).total_seconds()
+            mover_reentry_fresh = 0 <= ignition_age_seconds <= 600
+
+        # EMAT-style exception: strong price/range/continuation behavior should
+        # not be ignored just because the temporary RVOL proxy prints 1.92
+        # instead of 2.00.
+        momentum_exception = (
+            gain >= 15
+            and daily_range >= 15
+            and rvol >= 1.5
+            and continuation_score >= 50
+            and score >= 80
+            and vwap_ok
+            and vwap_extension <= 8
+        )
+
+        # Alpaca mover re-entry / acceleration path.  Example: a ticker exits
+        # the top-50 list and re-enters at a materially higher price and/or much
+        # better rank.
+        mover_acceleration = (
+            mover_reentry_fresh
+            and vwap_ok
+            and gain >= 5
+            and rvol >= 1.25
+            and vwap_extension <= 8
+            and (
+                mover_price_accel >= 5
+                or mover_rank_improvement >= 8
+            )
+        )
+
+        # General technical ignition path.  This is an EARLY WARNING, not an
+        # automatic buy signal.
+        technical_ignition = (
+            vwap_ok
+            and gain >= 8
+            and rvol >= 1.5
+            and continuation_score >= 40
+            and distance_from_hod <= 8
+            and vwap_extension <= 8
+            and (
+                spike
+                or momentum_exception
+            )
+        )
+
+        momentum_ignition = (
+            momentum_exception
+            or mover_acceleration
+            or technical_ignition
+        )
+
+        ignition_reasons = []
+
+        if momentum_exception:
+            ignition_reasons.append("STRONG_MOMENTUM")
+
+        if mover_acceleration:
+            ignition_reasons.append("MOVER_REENTRY")
+
+        if technical_ignition and spike:
+            ignition_reasons.append("VOLUME_ACCEL")
+
+        ignition_reason = "+".join(ignition_reasons)
+
+        # =========================
         # SETUP LOGIC
         # =========================
 
@@ -782,9 +1212,22 @@ class KaizenScanner:
 
         state = "DEAD"
 
+        # Highest priority:
+        # Stock is actively attacking the High of Day
         if continuation_score >= 80 and distance_from_hod <= 2:
             state = "🟢 HOD ATTACK"
 
+        # Sudden momentum / volume acceleration
+        # Must take priority over Trend Leader so an active ignition
+        # event is not hidden by the broader Trend Leader classification.
+        elif momentum_ignition:
+            state = "⚡ MOMENTUM IGNITION"
+
+        # Confirmed ORB breakout
+        elif strong_breakout:
+            state = "🟢 ORB BREAKOUT"
+
+        # Established momentum leader
         elif (
                 gain >= 15
                 and price > current_vwap
@@ -793,37 +1236,25 @@ class KaizenScanner:
         ):
             state = "🚀 TREND LEADER"
 
-        elif strong_breakout:
-            state = "🟢 ORB BREAKOUT"
-
+        # High-RVOL stock approaching HOD but not yet breaking ORB
         elif (
-
                 rvol >= 3
-
                 and distance_from_hod <= 3
-
                 and price > current_vwap
-
                 and not orb_break
-
         ):
-
             state = "🔵 LAUNCH PAD"
 
+        # Potential entry setup
         elif (
-
                 price > current_vwap
-
                 and rvol >= 2
-
                 and distance_from_hod <= 10
-
                 and not orb_break
-
         ):
-
             state = "🟣 ENTRY ALERT"
 
+        # Above VWAP but no stronger setup yet
         elif current_vwap > 0 and price > current_vwap:
             state = "🔷 VWAP RECLAIM"
 
@@ -836,6 +1267,7 @@ class KaizenScanner:
         else:
             state = "🔴 DEAD"
 
+
         # =========================
         # LIFECYCLE CLASSIFICATION
         # =========================
@@ -844,25 +1276,17 @@ class KaizenScanner:
         lifecycle_rank = 0
         action = "IGNORE"
 
-        vwap_extension = 0
-
-        if current_vwap > 0:
-            vwap_extension = (
-                                     (price - current_vwap)
-                                     / current_vwap
-                             ) * 100
-
-        # Stage 9 — Failed / Exit Zone
+        # Stage 10 — Failed / Exit Zone
         if (
                 price < current_vwap
                 and gain > 5
                 and distance_from_hod > 10
         ):
             lifecycle = "🔴 EXIT ZONE"
-            lifecycle_rank = 9
+            lifecycle_rank = 10
             action = "AVOID / EXIT"
 
-        # Stage 8 — Extended
+        # Stage 9 — Extended
         elif (
                 vwap_extension >= 8
                 or (
@@ -871,10 +1295,10 @@ class KaizenScanner:
                 )
         ):
             lifecycle = "🟠 EXTENDED"
-            lifecycle_rank = 8
+            lifecycle_rank = 9
             action = "Wait"
 
-        # Stage 7 — Trend Leader
+        # Stage 8 — Trend Leader
         elif (
                 gain >= 15
                 and price > current_vwap
@@ -882,27 +1306,25 @@ class KaizenScanner:
                 and rvol >= 2
         ):
             lifecycle = "🚀 TREND LEADER"
-            lifecycle_rank = 7
+            lifecycle_rank = 8
             action = "Hold"
 
-        # Stage 6 — HOD Attack
+        # Stage 7 — HOD Attack
         elif (
                 continuation_score >= 80
                 and distance_from_hod <= 2
         ):
             lifecycle = "🟢 HOD ATTACK"
-            lifecycle_rank = 6
+            lifecycle_rank = 7
             action = "Add"
 
-        # Stage 5 — ORB Confirmed
-        elif (
-                strong_breakout
-        ):
+        # Stage 6 — ORB Confirmed
+        elif strong_breakout:
             lifecycle = "✅ ORB Confirmed"
-            lifecycle_rank = 5
+            lifecycle_rank = 6
             action = "BUY"
 
-        # Stage 4 — Entry Alert
+        # Stage 5 — Entry Alert
         elif (
                 price > current_vwap
                 and rvol >= 2
@@ -911,8 +1333,14 @@ class KaizenScanner:
                 and vwap_extension <= 6
         ):
             lifecycle = "🟣 Entry Alert"
-            lifecycle_rank = 4
+            lifecycle_rank = 5
             action = "Buy"
+
+        # Stage 4 — Momentum Ignition
+        elif momentum_ignition:
+            lifecycle = "⚡ MOMENTUM IGNITION"
+            lifecycle_rank = 4
+            action = "WATCH NOW"
 
         # Stage 3 — Launch Pad
         elif (
@@ -943,6 +1371,123 @@ class KaizenScanner:
             lifecycle = "⚪ Discovery"
             lifecycle_rank = 1
             action = "Watch"
+
+        # ============================================================
+        # ALERT PATH AUDIT
+        # Automatically inspect strong stocks that Kaizen has NOT
+        # promoted into an actionable alert state.
+        # ============================================================
+
+        alerted_state = (
+                "ENTRY ALERT" in state
+                or "ORB BREAKOUT" in state
+                or "HOD ATTACK" in state
+                or "MOMENTUM IGNITION" in state
+        )
+
+        audit_candidate = (
+                score >= 75
+                or momentum_ignition
+                or strong_breakout
+                or rvol >= 2
+                or gain >= 10
+        )
+
+        # =========================
+        # ALERT ELIGIBILITY AUDIT
+        # Diagnostic only
+        # =========================
+
+        alert_states = {
+            "🟣 ENTRY ALERT",
+            "🟢 ORB BREAKOUT",
+            "🟢 HOD ATTACK",
+            "⚡ MOMENTUM IGNITION",
+        }
+
+        alert_eligible = state in alert_states
+
+        blocked_reasons = []
+
+        if current_vwap > 0 and price <= current_vwap:
+            blocked_reasons.append("BELOW_VWAP")
+
+        if rvol < 2:
+            blocked_reasons.append("LOW_RVOL")
+
+        if score < 75:
+            blocked_reasons.append("LOW_SCORE")
+
+        if gain < 0:
+            blocked_reasons.append("NEGATIVE_GAIN")
+
+        if distance_from_hod > 10:
+            blocked_reasons.append("FAR_FROM_HOD")
+
+        if vwap_extension >= 8:
+            blocked_reasons.append("VWAP_EXTENDED")
+
+        if state not in alert_states:
+            blocked_reasons.append("NO_ALERT_STATE")
+
+        alert_blocked_reason = (
+            "+".join(blocked_reasons)
+            if blocked_reasons
+            else ""
+        )
+
+        if DEBUG_MODE and audit_candidate:
+            print(
+                "\n===== ALERT PATH AUDIT ====="
+                f"\nSymbol: {symbol}"
+                f"\nPrice: {price:.4f}"
+                f"\nGain: {gain:.2f}%"
+                f"\nRVOL: {rvol:.2f}"
+                f"\nVWAP: {current_vwap:.4f}"
+                f"\nAbove VWAP: {vwap_ok}"
+                f"\nVWAP Extension: {vwap_extension:.2f}%"
+                f"\nHOD: {high:.4f}"
+                f"\nDistance From HOD: {distance_from_hod:.2f}%"
+                f"\nUpside Remaining: {upside_remaining:.2f}%"
+                f"\nORB High: {orb_high:.4f}"
+                f"\nORB Break: {orb_break}"
+                f"\nStrong Breakout: {strong_breakout}"
+                f"\nEarly Signal: {early_signal}"
+                f"\nContinuation: {continuation_score}"
+                f"\nScore: {score}"
+                f"\nState: {state}"
+                f"\nLifecycle: {lifecycle}"
+                f"\nAction: {action}"
+                f"\nMomentum Ignition: {momentum_ignition}"
+                f"\nIgnition Reason: {ignition_reason}"
+                "\n============================\n"
+            )
+
+            self.log_alert_path_audit(
+                symbol=symbol,
+                price=price,
+                gain=gain,
+                rvol=rvol,
+                current_vwap=current_vwap,
+                vwap_ok=vwap_ok,
+                vwap_extension=vwap_extension,
+                high=high,
+                distance_from_hod=distance_from_hod,
+                upside_remaining=upside_remaining,
+                orb_high=orb_high,
+                orb_break=orb_break,
+                strong_breakout=strong_breakout,
+                early_signal=early_signal,
+                continuation_score=continuation_score,
+                score=score,
+                state=state,
+                lifecycle=lifecycle,
+                action=action,
+                momentum_ignition=momentum_ignition,
+                ignition_reason=ignition_reason,
+                alert_eligible=alert_eligible,
+                alert_blocked_reason=alert_blocked_reason
+            )
 
         # =========================
         # TRADE PLAN
@@ -999,6 +1544,15 @@ class KaizenScanner:
                 f"Upside={upside_remaining:.1f}%"
             )
 
+        if state == "⚡ MOMENTUM IGNITION":
+            print(
+                f"MOMENTUM IGNITION: {symbol} | "
+                f"Gain={gain:.1f}% | "
+                f"RVOL={rvol:.1f} | "
+                f"Continuation={continuation_score} | "
+                f"Reason={ignition_reason}"
+            )
+
         return {
             "Symbol": symbol,
             #"State": state,
@@ -1019,6 +1573,10 @@ class KaizenScanner:
             "Score": score,
             "Continuation": continuation_score,
             "Opportunity": opportunity,
+            "Float": float_shares,
+            "FloatTurnover%": round(float_turnover, 2),
+            "SharesOutstanding": shares_outstanding,
+            "MarketCap": market_cap,
             "VolumeRatio": round(volume_ratio, 2),
             "RVOL": round(rvol, 2),
             "ATR": round(atr, 3),
@@ -1038,6 +1596,11 @@ class KaizenScanner:
 
             "Premarket": "YES" if premarket_candidate else "",
             "EarlySignal": "YES" if early_signal else "",
+            "MomentumIgnition": "YES" if momentum_ignition else "",
+            "IgnitionReason": ignition_reason,
+            "MoverReentry": "YES" if mover_reentry_fresh else "",
+            "MoverPriceAccel%": round(mover_price_accel, 2),
+            "MoverRankImprovement": mover_rank_improvement,
 
             "HOD_Dist%": round(distance_from_hod, 2),
             "Setup": setup_label,
@@ -1055,37 +1618,84 @@ class KaizenScanner:
 
     def run_scan(self, mode="watchlist"):
 
+        manual_symbols = self.get_manual_symbols()
+
         if mode == "watchlist":
-            symbols = WATCHLIST
+
+            symbols = list(
+                dict.fromkeys(
+                    WATCHLIST
+                    + manual_symbols
+                )
+            )
 
         elif mode == "movers":
-            symbols = self.get_movers()
 
+            movers = self.get_movers()
+
+            symbols = list(
+                dict.fromkeys(
+                    movers
+                    + manual_symbols
+                )
+            )
 
         elif mode == "combined":
 
             movers = self.get_movers()
 
-            symbols = list(dict.fromkeys(WATCHLIST + movers))
+            symbols = list(
+                dict.fromkeys(
+                    WATCHLIST
+                    + movers
+                    + manual_symbols
+                )
+            )
 
             if DEBUG_MODE:
                 print("\n==============================")
 
                 print("SCAN MODE: COMBINED")
 
-                print("WATCHLIST COUNT:", len(WATCHLIST))
+                print(
+                    "WATCHLIST COUNT:",
+                    len(WATCHLIST)
+                )
 
-                print("MOVERS COUNT:", len(movers))
+                print(
+                    "MOVERS COUNT:",
+                    len(movers)
+                )
 
-                print("MOVERS:", movers)
+                print(
+                    "MANUAL RADAR COUNT:",
+                    len(manual_symbols)
+                )
 
-                print("TOTAL UNIQUE COUNT:", len(symbols))
+                print(
+                    "MANUAL RADAR:",
+                    manual_symbols
+                )
 
-                print("ALL SYMBOLS:", symbols)
+                print(
+                    "MOVERS:",
+                    movers
+                )
+
+                print(
+                    "TOTAL UNIQUE COUNT:",
+                    len(symbols)
+                )
+
+                print(
+                    "ALL SYMBOLS:",
+                    symbols
+                )
 
                 print("==============================\n")
 
         else:
+
             return pd.DataFrame()
 
         snapshots = self.get_snapshot(symbols)
@@ -1136,10 +1746,11 @@ class KaizenScanner:
         #)
 
         state_rank = {
-            "🟢 HOD ATTACK": 8,
-            "🚀 TREND LEADER": 7,
-            "🟢 ORB BREAKOUT": 6,
-            "🟣 ENTRY ALERT": 5,
+            "🟢 HOD ATTACK": 9,
+            "🚀 TREND LEADER": 8,
+            "🟢 ORB BREAKOUT": 7,
+            "🟣 ENTRY ALERT": 6,
+            "⚡ MOMENTUM IGNITION": 5,
             "🔵 LAUNCH PAD": 4,
             "🔷 VWAP RECLAIM": 3,
             "🟡 PULLBACK": 2,

@@ -62,6 +62,22 @@ def calculate_volume_ratio(df, lookback=5):
 
     return current_vol / avg_vol
 
+def calculate_float_turnover(
+    volume,
+    float_shares
+):
+    """
+    Returns the percentage of the public float
+    that has traded today.
+    """
+
+    if not volume or not float_shares:
+        return 0.0
+
+    return (
+        volume / float_shares
+    ) * 100
+
 def calculate_intraday_rvol(
         current_session_volume,
         average_daily_volume,
