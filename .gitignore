@@ -28,7 +28,11 @@ Thumbs.db
 # Data Exports
 *.csv
 *.xlsx
-# Runtime Cache
 
 # Runtime Cache
 fundamentals_cache.json
+
+# PyInstaller
+build/
+dist/
+*.spec
