@@ -34,6 +34,8 @@ from indicators import (
 )
 
 from trade_journal import TradeJournal
+from market_data_provider import AlpacaMarketDataProvider
+from market_radar import MarketRadar
 
 class KaizenScanner:
 
@@ -135,7 +137,7 @@ class KaizenScanner:
             ])
 
 
-    def __init__(self):
+    def __init__(self, market_data_provider=None):
 
         self.headers = {
             "APCA-API-KEY-ID": API_KEY.strip(),
@@ -146,6 +148,13 @@ class KaizenScanner:
         self.trade_journal = TradeJournal()
         self.fundamentals = FundamentalsEngine()
 
+        # Phase 3: vendor API access and market-behavior memory are separate.
+        # Swap this provider later (Massive, etc.) without rewriting Radar.
+        self.market_data = market_data_provider or AlpacaMarketDataProvider(
+            API_KEY, SECRET_KEY, base_url=self.base_url, feed="iex", debug=DEBUG_MODE
+        )
+        self.market_radar = MarketRadar()
+
         # Track the previous mover list so we can detect entries and exits
         self.previous_movers = set()
         self.discovery_seen_date = datetime.now().date()
@@ -154,7 +163,8 @@ class KaizenScanner:
         # Momentum Ignition memory.  This lets Kaizen remember when a ticker
         # leaves the Alpaca mover list and then re-enters at a higher price /
         # better rank.  That re-entry behavior can be an early momentum clue.
-        self.mover_history = {}
+        # Compatibility alias for older Momentum Ignition code paths.
+        self.mover_history = self.market_radar.symbols
 
         # ==================================================
         # MANUAL / TOS RADAR
@@ -303,561 +313,134 @@ class KaizenScanner:
     # ==================================================
 
     def get_movers(self):
+        """Fetch and normalize movers through the configured data provider."""
+        raw_rows = self.market_data.get_movers(top=50)
+        discovery_rows = []
+        clean_symbols = []
 
-        url = (
-            f"{self.base_url}"
-            f"/v1beta1/screener/stocks/movers"
-        )
+        for row in raw_rows:
+            symbol = str(row.get("symbol", "")).upper()
+            if not symbol:
+                continue
+            if "." in symbol or symbol.endswith(("W", "R", "U")):
+                continue
+            clean_symbols.append(symbol)
+            discovery_rows.append({**row, "symbol": symbol})
 
-        try:
-            r = requests.get(
-                url,
-                headers=self.headers,
-                params={"top": 50},
-                timeout=15
-            )
+        if DEBUG_MODE:
+            print("CLEAN MOVERS COUNT:", len(clean_symbols))
+            print("CLEAN MOVERS:", clean_symbols)
 
-            if DEBUG_MODE:
-                print("MOVERS STATUS:", r.status_code)
+        # Provider-independent Radar consumes normalized observations.
+        self.market_radar.observe_batch(discovery_rows)
+        self.mover_history = self.market_radar.symbols
 
-            if r.status_code != 200:
-
-                if DEBUG_MODE:
-                    print(
-                        "MOVERS API ERROR:",
-                        r.text[:500]
-                    )
-
-                return []
-
-            data = r.json()
-
-            gainers = data.get("gainers", [])
-
-            if DEBUG_MODE and gainers:
-                print(
-                    "SAMPLE MOVER DATA:",
-                    gainers[0]
-                )
-
-            if DEBUG_MODE:
-                print(
-                    "RAW GAINERS COUNT:",
-                    len(gainers)
-                )
-
-            clean_symbols = []
-            discovery_rows = []
-
-            for rank, g in enumerate(
-                    gainers,
-                    start=1
-            ):
-
-                symbol = g.get("symbol", "")
-
-                if not symbol:
-                    continue
-
-                if (
-                        "." in symbol
-                        or symbol.endswith("W")
-                        or symbol.endswith("R")
-                        or symbol.endswith("U")
-                ):
-                    continue
-
-                clean_symbols.append(symbol)
-
-                discovery_rows.append({
-                    "symbol": symbol,
-                    "rank": rank,
-                    "price": g.get("price", ""),
-                    "change": g.get("change", ""),
-                    "percent_change": g.get(
-                        "percent_change",
-                        ""
-                    )
-                })
-
-            if DEBUG_MODE:
-                print(
-                    "CLEAN MOVERS COUNT:",
-                    len(clean_symbols)
-                )
-
-                print(
-                    "CLEAN MOVERS:",
-                    clean_symbols
-                )
-
-            print(
-                "ABOUT TO LOG DISCOVERY:",
-                len(discovery_rows)
-            )
-
-            self.log_discovery_timeline(
-                discovery_rows
-            )
-
-            print("DISCOVERY LOG FINISHED")
-
-            return clean_symbols
-
-        except Exception as e:
-
-            print(
-
-                "MOVERS EXCEPTION:",
-
-                type(e).__name__,
-
-                e
-
-            )
-
-        return []
+        print("ABOUT TO LOG DISCOVERY:", len(discovery_rows))
+        self.log_discovery_timeline(discovery_rows)
+        print("DISCOVERY LOG FINISHED")
+        return clean_symbols
 
 
     def log_discovery_timeline(self, mover_rows):
-
-        project_folder = os.path.dirname(
-            os.path.abspath(__file__)
-        )
-
-        filename = os.path.join(
-            project_folder,
-            "discovery_events.csv"
-        )
-
+        """Log mover-universe ENTRY/EXIT events; Radar owns behavioral memory."""
+        filename = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discovery_events.csv")
         current_date = datetime.now().date()
-
-        # Reset tracking at the beginning of a new day
         if current_date != self.discovery_seen_date:
             self.previous_movers = set()
-            self.mover_history = {}
             self.discovery_seen_date = current_date
             self.movers_initialized = False
 
-        timestamp = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        # Build the current mover symbol set
-        current_movers = {
-            mover.get("symbol", "")
-            for mover in mover_rows
-            if mover.get("symbol")
-        }
-
-        # Keep lookup data for ranks, prices, and changes
-        mover_lookup = {
-            mover.get("symbol"): mover
-            for mover in mover_rows
-            if mover.get("symbol")
-        }
-
-        # On the first scan of the session, treat all current movers as entries
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_movers = {m.get("symbol", "") for m in mover_rows if m.get("symbol")}
+        mover_lookup = {m.get("symbol"): m for m in mover_rows if m.get("symbol")}
         if not self.movers_initialized:
-            entered_symbols = current_movers
-            exited_symbols = set()
+            entered_symbols, exited_symbols = current_movers, set()
             self.movers_initialized = True
-
         else:
-            entered_symbols = (
-                    current_movers - self.previous_movers
-            )
+            entered_symbols = current_movers - self.previous_movers
+            exited_symbols = self.previous_movers - current_movers
 
-            exited_symbols = (
-                    self.previous_movers - current_movers
-            )
-
-        # Update Momentum Ignition context before writing the discovery log.
-        # A symbol that re-enters the mover list after previously appearing can
-        # carry useful information even if its RVOL proxy is still below 2.0.
-        for symbol in current_movers:
-            mover = mover_lookup.get(symbol, {})
-            current_rank = mover.get("rank", 0) or 0
-            current_price = mover.get("price", 0) or 0
-            current_percent_change = mover.get("percent_change", 0) or 0
-
-            try:
-                current_rank = int(current_rank)
-            except (TypeError, ValueError):
-                current_rank = 0
-
-            try:
-                current_price = float(current_price)
-            except (TypeError, ValueError):
-                current_price = 0
-
-            try:
-                current_percent_change = float(current_percent_change)
-            except (TypeError, ValueError):
-                current_percent_change = 0
-
-            history = self.mover_history.setdefault(symbol, {
-                # Existing re-entry tracking
-                "last_entry_price": 0.0,
-                "last_entry_rank": 0,
-                "reentry_count": 0,
-                "reentered_recently": False,
-                "entry_price_change_pct": 0.0,
-                "rank_improvement": 0,
-                "ignition_timestamp": None,
-
-                # ==========================================
-                # MARKET RADAR MEMORY
-                # ==========================================
-                "first_seen": None,
-                "last_seen": None,
-
-                "observation_count": 0,
-                "consecutive_scans": 0,
-
-                "previous_price": 0.0,
-                "previous_rank": 0,
-                "previous_percent_change": 0.0,
-
-                "price_accel_pct": 0.0,
-                "rank_accel": 0,
-                "percent_change_accel": 0.0,
-            })
-
-            # ==========================================
-            # MARKET RADAR OBSERVATION TRACKING
-            # ==========================================
-
-            now = datetime.now()
-
-            previous_price = float(
-                history.get("previous_price", 0) or 0
-            )
-
-            previous_rank = int(
-                history.get("previous_rank", 0) or 0
-            )
-
-            previous_percent_change = float(
-                history.get("previous_percent_change", 0) or 0
-            )
-
-            # First time Kaizen has seen this ticker today
-            if history["first_seen"] is None:
-                history["first_seen"] = now
-
-            history["last_seen"] = now
-
-            # Count every scan in which the ticker appears
-            history["observation_count"] += 1
-
-            # ==========================================
-            # CONSECUTIVE MOVER-LIST PERSISTENCE
-            # ==========================================
-
-            if symbol in entered_symbols:
-
-                # New entry or re-entry starts a new consecutive streak.
-                history["consecutive_scans"] = 1
-
-            else:
-
-                # Stock remained on the mover list from the previous scan.
-                history["consecutive_scans"] += 1
-
-            # ==========================================
-            # SCAN-TO-SCAN ACCELERATION
-            # ==========================================
-
-            # Only calculate true scan-to-scan acceleration if the ticker
-            # remained on the mover list. A re-entry is handled separately
-            # by the existing mover re-entry logic below.
-
-            if symbol not in entered_symbols:
-
-                if previous_price > 0 and current_price > 0:
-                    history["price_accel_pct"] = round(
-                        (
-                                (current_price - previous_price)
-                                / previous_price
-                        ) * 100,
-                        2
-                    )
-                else:
-                    history["price_accel_pct"] = 0.0
-
-                if previous_rank > 0 and current_rank > 0:
-
-                    # Positive number means the ticker moved toward rank #1.
-                    history["rank_accel"] = (
-                            previous_rank - current_rank
-                    )
-
-                else:
-                    history["rank_accel"] = 0
-
-                history["percent_change_accel"] = round(
-                    current_percent_change
-                    - previous_percent_change,
-                    2
-                )
-
-            else:
-
-                # Do not treat a re-entry after an absence as ordinary
-                # scan-to-scan acceleration.
-                history["price_accel_pct"] = 0.0
-                history["rank_accel"] = 0
-                history["percent_change_accel"] = 0.0
-
-            # Save this observation for comparison on the next scan
-            history["previous_price"] = current_price
-            history["previous_rank"] = current_rank
-            history["previous_percent_change"] = current_percent_change
-
-            # ==========================================
-            # EXISTING MOVER RE-ENTRY TRACKING
-            # ==========================================
-
-            if symbol in entered_symbols:
-
-                previous_entry_price = (
-                        history.get("last_entry_price", 0) or 0
-                )
-
-                previous_entry_rank = (
-                        history.get("last_entry_rank", 0) or 0
-                )
-
-                is_reentry = previous_entry_price > 0
-
-                if is_reentry:
-
-                    history["reentry_count"] += 1
-                    history["reentered_recently"] = True
-                    history["ignition_timestamp"] = now
-
-                    if (
-                            current_price > 0
-                            and previous_entry_price > 0
-                    ):
-                        history["entry_price_change_pct"] = round(
-                            (
-                                    (current_price - previous_entry_price)
-                                    / previous_entry_price
-                            ) * 100,
-                            2
-                        )
-
-                    if (
-                            current_rank > 0
-                            and previous_entry_rank > 0
-                    ):
-                        # Positive = improved toward rank #1.
-                        history["rank_improvement"] = (
-                                previous_entry_rank
-                                - current_rank
-                        )
-
-                else:
-
-                    history["reentered_recently"] = False
-                    history["entry_price_change_pct"] = 0.0
-                    history["rank_improvement"] = 0
-
-                history["last_entry_price"] = current_price
-                history["last_entry_rank"] = current_rank
-
-
-        # Nothing changed, so do not write anything
         if not entered_symbols and not exited_symbols:
             self.previous_movers = current_movers
             return
 
         file_exists = os.path.isfile(filename)
-
         try:
-            with open(
-                    filename,
-                    "a",
-                    newline="",
-                    encoding="utf-8"
-            ) as f:
-
+            with open(filename, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-
                 if not file_exists:
-                    writer.writerow([
-                        "Timestamp",
-                        "Symbol",
-                        "Event",
-                        "Rank",
-                        "MoverPrice",
-                        "Change",
-                        "PercentChange",
-                        "Source"
-                    ])
-
-                # Log new entries
+                    writer.writerow(["Timestamp", "Symbol", "Event", "Rank", "MoverPrice", "Change", "PercentChange", "Source"])
                 for symbol in sorted(entered_symbols):
                     mover = mover_lookup.get(symbol, {})
-
-                    writer.writerow([
-                        timestamp,
-                        symbol,
-                        "ENTRY",
-                        mover.get("rank", ""),
-                        mover.get("price", ""),
-                        mover.get("change", ""),
-                        mover.get("percent_change", ""),
-                        "ALPACA_MOVERS"
-                    ])
-
-                # Log exits
+                    writer.writerow([timestamp, symbol, "ENTRY", mover.get("rank", ""), mover.get("price", ""), mover.get("change", ""), mover.get("percent_change", ""), mover.get("source", "ALPACA_MOVERS")])
                 for symbol in sorted(exited_symbols):
-                    writer.writerow([
-                        timestamp,
-                        symbol,
-                        "EXIT",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "ALPACA_MOVERS"
-                    ])
-
+                    writer.writerow([timestamp, symbol, "EXIT", "", "", "", "", "ALPACA_MOVERS"])
             if DEBUG_MODE:
-                print(
-                    f"DISCOVERY EVENTS: "
-                    f"{len(entered_symbols)} entries, "
-                    f"{len(exited_symbols)} exits"
-                )
-
-        except Exception as e:
-            print(
-                "DISCOVERY EVENT ERROR:",
-                type(e).__name__,
-                e
-            )
-
-        # Save current list for comparison with the next scan
+                print(f"DISCOVERY EVENTS: {len(entered_symbols)} entries, {len(exited_symbols)} exits")
+        except Exception as exc:
+            print("DISCOVERY EVENT ERROR:", type(exc).__name__, exc)
         self.previous_movers = current_movers
 
     def get_snapshot(self, symbols):
-
-        if not symbols:
-            return {}
-
-        url = f"{self.base_url}/v2/stocks/snapshots"
-
-        try:
-            r = requests.get(
-                url,
-                headers=self.headers,
-                params={"symbols": ",".join(symbols)},
-                timeout=15
-            )
-
-            if r.status_code != 200:
-                return {}
-
-            return r.json()
-
-        except Exception:
-            return {}
+        return self.market_data.get_snapshots(symbols)
 
     def get_bars(self, symbol, timeframe="5Min", limit=200):
+        import time
+        started = time.time()
+        bars = self.market_data.get_bars(symbol, timeframe=timeframe, limit=limit)
+        if DEBUG_MODE:
+            print(symbol, "took", round(time.time() - started, 2), "seconds")
+        return bars
 
-        url = f"{self.base_url}/v2/stocks/{symbol}/bars"
+    def get_daily_bars(self, symbol, limit=20):
+        return self.market_data.get_daily_bars(symbol, limit=limit)
 
-        params = {
-            "timeframe": timeframe,
-            "limit": limit,
-            "feed": "iex"
-        }
+    def get_radar_summary(self):
+        return self.market_radar.get_summary()
 
-        try:
-            import time
+    def drain_radar_events(self):
+        events = self.market_radar.drain_events()
+        if events:
+            filename = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radar_events.csv")
+            exists = os.path.isfile(filename)
+            with open(filename, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if not exists:
+                    writer.writerow(["Timestamp", "Symbol", "OldRadarState", "NewRadarState", "RadarScore", "Reason"])
+                for event in events:
+                    stamp = event.get("timestamp")
+                    if hasattr(stamp, "strftime"):
+                        stamp = stamp.strftime("%Y-%m-%d %H:%M:%S")
+                    writer.writerow([stamp, event.get("symbol", ""), event.get("old_state", ""), event.get("new_state", ""), event.get("score", ""), event.get("reason", "")])
+        return events
 
-            start = time.time()
-
-            r = requests.get(
-                url,
-                headers=self.headers,
-                params=params,
-                timeout=15
-            )
-
-            print(symbol, "took", round(time.time() - start, 2), "seconds")
-
-            if r.status_code != 200:
-                return []
-
-            data = r.json()
-
-            bars = data.get("bars")
-
-            if not bars:
-                return []
-
-            # normalize
-            clean = []
-            for b in bars:
-                if not all(k in b for k in ["o", "h", "l", "c", "v"]):
-                    continue
-
-                clean.append({
-                    "o": float(b["o"]),
-                    "h": float(b["h"]),
-                    "l": float(b["l"]),
-                    "c": float(b["c"]),
-                    "v": float(b["v"])
-                })
-
-            return clean
-
-        except Exception:
-            return []
-
-    def get_daily_bars(
-            self,
-            symbol,
-            limit=20
-    ):
-
-        url = (
-            f"{self.base_url}"
-            f"/v2/stocks/{symbol}/bars"
-        )
-
-        params = {
-            "timeframe": "1Day",
-            "limit": limit,
-            "feed": "iex"
-        }
-
-        try:
-            response = requests.get(
-                url,
-                headers=self.headers,
-                params=params,
-                timeout=15
-            )
-
-            if response.status_code != 200:
-                return []
-
-            return response.json().get("bars", [])
-
-        except Exception as error:
-            if DEBUG_MODE:
-                print(
-                    symbol,
-                    "DAILY BAR ERROR:",
-                    error
-                )
-
-            return []
+    def log_radar_timeline(self):
+        """Append one normalized Radar snapshot per currently tracked mover."""
+        filename = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radar_timeline.csv")
+        records = self.market_radar.get_present_records()
+        if not records:
+            return
+        exists = os.path.isfile(filename)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fields = [
+            "Timestamp", "Symbol", "Source", "RadarState", "RadarScore", "Price", "Rank",
+            "PercentChange", "PriceAccelPct", "RankAccel", "GainAccel", "Volume", "VolumeDelta",
+            "VolumeAccel", "RVOL", "AboveVWAP", "VWAPExtPct", "HODDistPct", "Observations",
+            "Persistence", "Reentries", "Reason"
+        ]
+        with open(filename, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not exists:
+                writer.writerow(fields)
+            for r in records:
+                writer.writerow([
+                    stamp, r.get("symbol", ""), r.get("source", ""), r.get("radar_state", ""), r.get("radar_score", 0),
+                    r.get("current_price", 0), r.get("current_rank", 0), r.get("current_percent_change", 0),
+                    r.get("price_accel_pct", 0), r.get("rank_accel", 0), r.get("percent_change_accel", 0),
+                    r.get("current_volume", 0), r.get("volume_delta", 0), r.get("volume_accel_ratio", 0), r.get("rvol", 0),
+                    r.get("above_vwap", False), r.get("vwap_extension", 0), r.get("hod_distance", 0),
+                    r.get("observation_count", 0), r.get("consecutive_scans", 0), r.get("reentry_count", 0), r.get("radar_reason", "")
+                ])
 
     # ==================================================
     # CORE ANALYSIS
@@ -1241,153 +824,30 @@ class KaizenScanner:
                 ((price - current_vwap) / current_vwap) * 100
             )
 
-        mover_context = self.mover_history.get(symbol, {})
-
-        # ==========================================
-        # MARKET RADAR
-        # ==========================================
-
-        radar_observation_count = int(
-            mover_context.get("observation_count", 0) or 0
+        # Phase 3 Market Radar technical enrichment. The Radar engine combines
+        # provider observations with scanner metrics and owns scoring/lifecycle.
+        mover_context = self.market_radar.observe_technical(
+            symbol,
+            volume=volume,
+            rvol=rvol,
+            above_vwap=vwap_ok,
+            vwap_extension=vwap_extension,
+            hod_distance=distance_from_hod,
+            gain=gain,
         )
 
-        radar_consecutive_scans = int(
-            mover_context.get("consecutive_scans", 0) or 0
-        )
+        radar_observation_count = int(mover_context.get("observation_count", 0) or 0)
+        radar_consecutive_scans = int(mover_context.get("consecutive_scans", 0) or 0)
+        radar_price_accel = float(mover_context.get("price_accel_pct", 0) or 0)
+        radar_rank_accel = int(mover_context.get("rank_accel", 0) or 0)
+        radar_gain_accel = float(mover_context.get("percent_change_accel", 0) or 0)
+        radar_volume_accel = float(mover_context.get("volume_accel_ratio", 0) or 0)
+        radar_state = str(mover_context.get("radar_state", "TRACKING"))
+        radar_score = float(mover_context.get("radar_score", 0) or 0)
+        radar_reason = str(mover_context.get("radar_reason", ""))
 
-        radar_price_accel = float(
-            mover_context.get("price_accel_pct", 0) or 0
-        )
-
-        radar_rank_accel = int(
-            mover_context.get("rank_accel", 0) or 0
-        )
-
-        radar_gain_accel = float(
-            mover_context.get("percent_change_accel", 0) or 0
-        )
-
-        radar_score = 0
-        radar_reasons = []
-
-        # ==========================================
-        # 1. PERSISTENCE
-        # Max: 25 points
-        # ==========================================
-
-        if radar_consecutive_scans >= 6:
-            radar_score += 25
-            radar_reasons.append("PERSISTENT")
-
-        elif radar_consecutive_scans >= 4:
-            radar_score += 20
-            radar_reasons.append("PERSISTENT")
-
-        elif radar_consecutive_scans >= 3:
-            radar_score += 15
-            radar_reasons.append("BUILDING")
-
-        elif radar_consecutive_scans >= 2:
-            radar_score += 8
-
-        # ==========================================
-        # 2. PRICE ACCELERATION
-        # Max: 20 points
-        # ==========================================
-
-        if radar_price_accel >= 5:
-            radar_score += 20
-            radar_reasons.append("PRICE_SURGE")
-
-        elif radar_price_accel >= 2:
-            radar_score += 15
-            radar_reasons.append("PRICE_ACCEL")
-
-        elif radar_price_accel >= 0.75:
-            radar_score += 10
-            radar_reasons.append("PRICE_RISING")
-
-        elif radar_price_accel > 0:
-            radar_score += 5
-
-        # ==========================================
-        # 3. RANK ACCELERATION
-        # Max: 20 points
-        # ==========================================
-
-        if radar_rank_accel >= 10:
-            radar_score += 20
-            radar_reasons.append("RANK_SURGE")
-
-        elif radar_rank_accel >= 5:
-            radar_score += 15
-            radar_reasons.append("RANK_ACCEL")
-
-        elif radar_rank_accel >= 2:
-            radar_score += 10
-            radar_reasons.append("RANK_RISING")
-
-        elif radar_rank_accel > 0:
-            radar_score += 5
-
-        # ==========================================
-        # 4. GAIN ACCELERATION
-        # Max: 15 points
-        # ==========================================
-
-        if radar_gain_accel >= 5:
-            radar_score += 15
-            radar_reasons.append("GAIN_SURGE")
-
-        elif radar_gain_accel >= 2:
-            radar_score += 10
-            radar_reasons.append("GAIN_ACCEL")
-
-        elif radar_gain_accel >= 0.75:
-            radar_score += 5
-
-        # ==========================================
-        # 5. HOD PRESSURE
-        # Max: 10 points
-        # ==========================================
-
-        if distance_from_hod <= 2:
-            radar_score += 10
-            radar_reasons.append("HOD_PRESSURE")
-
-        elif distance_from_hod <= 5:
-            radar_score += 7
-
-        elif distance_from_hod <= 10:
-            radar_score += 3
-
-        # ==========================================
-        # 6. VWAP STRENGTH
-        # Max: 10 points
-        # ==========================================
-
-        if vwap_ok:
-            radar_score += 10
-            radar_reasons.append("ABOVE_VWAP")
-
-        # Clamp score to 0-100
-        radar_score = round(
-            max(0, min(radar_score, 100)),
-            2
-        )
-
-        radar_reason = "+".join(radar_reasons)
-
-        # ==========================================
-        # RADAR QUALIFICATION
-        # ==========================================
-
-        market_radar = (
-                radar_score >= 45
-                and radar_consecutive_scans >= 2
-                and gain >= 3
-                and vwap_extension <= 8
-        )
+        # MARKET RADAR is an attention state, never an automatic entry signal.
+        market_radar = radar_state in ("ACCELERATING", "IGNITION", "ACTIVE")
 
         mover_reentry = bool(
             mover_context.get("reentered_recently", False)
@@ -1902,6 +1362,10 @@ class KaizenScanner:
             "RadarPriceAccel%": round(radar_price_accel, 2),
             "RadarRankAccel": radar_rank_accel,
             "RadarGainAccel": round(radar_gain_accel, 2),
+            "RadarVolumeAccel": round(radar_volume_accel, 2),
+            "RadarLifecycle": radar_state,
+            "RadarSource": mover_context.get("source", ""),
+            "RadarReentries": int(mover_context.get("reentry_count", 0) or 0),
 
             # Mover re-entry
             "MoverReentry": "YES" if mover_reentry_fresh else "",
@@ -2023,6 +1487,7 @@ class KaizenScanner:
                     print(symbol, "error:", e)
 
         if not results:
+            self.log_radar_timeline()
             return pd.DataFrame()
 
         df = pd.DataFrame(results)
@@ -2076,6 +1541,8 @@ class KaizenScanner:
         print(df[["Symbol", "State", "ORB", "ContGrade"]])
         df["StateRank"] = df["State"].map(state_rank)
         df["ORBRank"] = df["ORB"].map(orb_rank)
+
+        self.log_radar_timeline()
 
         return (
             df.sort_values(

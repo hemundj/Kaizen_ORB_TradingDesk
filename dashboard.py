@@ -7,10 +7,20 @@ import csv
 import os
 import threading
 import queue
+import sys
 
 from scanner import KaizenScanner
 from market import market_is_open
 
+def resource_path(relative_path):
+    """Return resource path for development and PyInstaller."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        relative_path
+    )
 
 class ORBDashboard:
 
@@ -102,6 +112,10 @@ class ORBDashboard:
             old_state,
             new_state,
             row
+        )
+
+        self._add_event(
+            f"{symbol}  {new_state}  •  Price {row.get('Price', '')}  •  {row.get('IgnitionReason', '')}"
         )
 
     def log_alert(
@@ -305,36 +319,44 @@ class ORBDashboard:
     # INIT
     # =========================
     def __init__(self, root):
-
         self.root = root
-        self.root.title("Kaizen ORB Trading Desk")
-        self.root.geometry("1450x780")
-        self.root.minsize(1050, 620)
+        self.root.iconbitmap(resource_path("Kaizen_V3_Red_Kanji.ico"))
+        self.root.title("Kaizen Trading Desk")
+        self.root.geometry("1500x900")
+        self.root.minsize(1180, 720)
+
+        # ---------- Theme ----------
+        self.colors = {
+            "bg": "#11151b", "panel": "#171d25", "panel2": "#1d2530",
+            "border": "#2b3542", "text": "#e7edf5", "muted": "#8f9baa",
+            "accent": "#5aa9ff", "good": "#63d38a", "warn": "#f3c969",
+            "bad": "#ef7777", "purple": "#b997ff"
+        }
+        self.root.configure(bg=self.colors["bg"])
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Treeview", background=self.colors["panel"], foreground=self.colors["text"],
+                        fieldbackground=self.colors["panel"], rowheight=28, borderwidth=0)
+        style.configure("Treeview.Heading", background=self.colors["panel2"], foreground=self.colors["text"],
+                        relief="flat", font=("Segoe UI", 9, "bold"))
+        style.map("Treeview", background=[("selected", "#294663")], foreground=[("selected", "white")])
+        style.configure("TCombobox", fieldbackground=self.colors["panel2"], background=self.colors["panel2"])
 
         self.scanner = KaizenScanner()
-
         self.previous_states = {}
-
         self.auto_refresh = True
-
         self.refresh_job = None
-
-        # Background scan worker state. Tkinter widgets must only be touched
-        # from the main UI thread; scanner/network work runs in a worker.
         self.scan_in_progress = False
         self.scan_results = queue.Queue()
         self.scan_started_at = None
         self.pending_rescan = False
         self.last_scan_df = pd.DataFrame()
-
-        # Poll worker results without blocking the Tkinter event loop.
+        self.last_radar_summary = {}
+        self.display_df = pd.DataFrame()
         self.root.after(100, self._poll_scan_results)
-
-        # =========================
-        # TOP CONTROL PANEL
-        # =========================
-        control_frame = tk.Frame(root)
-        control_frame.pack(fill="x", pady=5)
 
         self.hide_wash_var = tk.BooleanVar(value=False)
         self.hod_var = tk.BooleanVar(value=True)
@@ -344,415 +366,206 @@ class ORBDashboard:
         self.ignition_var = tk.BooleanVar(value=True)
         self.reclaim_var = tk.BooleanVar(value=True)
         self.entry_var = tk.BooleanVar(value=True)
-
-        tk.Checkbutton(
-            control_frame,
-            text="HOD Attack",
-            variable=self.hod_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Checkbutton(
-            control_frame,
-            text="ORB Breakout",
-            variable=self.orb_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Checkbutton(
-            control_frame,
-            text="Launch Pad",
-            variable=self.launch_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Checkbutton(
-            control_frame,
-            text="Market Radar",
-            variable=self.radar_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        # NEW
-        tk.Checkbutton(
-            control_frame,
-            text="Momentum Ignition",
-            variable=self.ignition_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Checkbutton(
-            control_frame,
-            text="VWAP Reclaim",
-            variable=self.reclaim_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Checkbutton(
-            control_frame,
-            text="Entry Alert",
-            variable=self.entry_var,
-            command=self.refresh_display_filters
-        ).pack(side="left", padx=5)
-
-        tk.Label(
-            control_frame,
-            text="Scan Mode:"
-        ).pack(side="left", padx=5)
-
-        self.mode_var = tk.StringVar(
-            value="combined"
-        )
-
-        mode_dropdown = ttk.Combobox(
-            control_frame,
-            textvariable=self.mode_var,
-            values=[
-                "combined",
-                "movers",
-                "watchlist"
-            ],
-            state="readonly",
-            width=15
-        )
-
-        mode_dropdown.pack(
-            side="left",
-            padx=5
-        )
-
-        self.run_button = tk.Button(
-            control_frame,
-            text="Run Scan",
-            command=self.run_scan
-        )
-
-        self.run_button.pack(
-            side="left",
-            padx=5
-        )
-
-        # =========================
-        # REFRESH BUTTON
-        # =========================
-        self.auto_button = tk.Button(
-            control_frame,
-            text=(
-                "Auto Refresh ON"
-                if self.auto_refresh
-                else "Auto Refresh OFF"
-            ),
-            command=self.toggle_auto_refresh
-        )
-
-        self.auto_button.pack(
-            side="left",
-            padx=5
-        )
-
-        self.status_label = tk.Label(
-            control_frame,
-            text=self.get_status_text(),
-            fg="blue"
-        )
-
-        self.status_label.pack(
-            side="right",
-            padx=10
-        )
-
-        self.last_scan_label = tk.Label(
-            control_frame,
-            text="Last Scan: Never",
-            fg="green"
-        )
-
-        self.last_scan_label.pack(
-            side="right",
-            padx=10
-        )
-
-        self.scan_status_label = tk.Label(
-            control_frame,
-            text="Ready",
-            fg="gray"
-        )
-        self.scan_status_label.pack(
-            side="right",
-            padx=10
-        )
-
-        tk.Checkbutton(
-            control_frame,
-            text="Hide Wash Risk",
-            variable=self.hide_wash_var,
-            command=self.refresh_display_filters
-        ).pack(
-            side="left",
-            padx=5
-        )
-
-        self.stats_label = tk.Label(
-            self.root,
-            text="No Alert History",
-            justify="left",
-            anchor="w"
-        )
-
-        self.stats_label.pack(
-            fill="x",
-            padx=5,
-            pady=5
-        )
-
-        # Cooldown remains 5 minutes,
-        # but it now applies to each (symbol, state) pair.
+        self.mode_var = tk.StringVar(value="combined")
+        self.manual_symbol_var = tk.StringVar()
         self.last_alert_time = {}
         self.alert_cooldown = 300
 
-        # =========================
-        # MANUAL / TOS RADAR
-        # =========================
+        # ---------- Header ----------
+        header = tk.Frame(root, bg=self.colors["bg"], padx=16, pady=12)
+        header.pack(fill="x")
+        title_box = tk.Frame(header, bg=self.colors["bg"])
+        title_box.pack(side="left")
+        tk.Label(title_box, text="KAIZEN", bg=self.colors["bg"], fg=self.colors["accent"],
+                 font=("Segoe UI", 18, "bold")).pack(side="left")
+        tk.Label(title_box, text="  TRADING DESK", bg=self.colors["bg"], fg=self.colors["text"],
+                 font=("Segoe UI", 18)).pack(side="left")
+        self.scan_status_label = tk.Label(header, text="Ready", bg=self.colors["bg"], fg=self.colors["muted"],
+                                          font=("Segoe UI", 10, "bold"))
+        self.scan_status_label.pack(side="right", padx=(18, 0))
+        self.last_scan_label = tk.Label(header, text="Last Scan: Never", bg=self.colors["bg"], fg=self.colors["muted"])
+        self.last_scan_label.pack(side="right", padx=18)
+        self.status_label = tk.Label(header, text=self.get_status_text(), bg=self.colors["bg"], fg=self.colors["good"],
+                                     font=("Segoe UI", 10, "bold"))
+        self.status_label.pack(side="right")
 
-        manual_frame = tk.Frame(
-            self.root
-        )
+        # ---------- Scanner toolbar ----------
+        toolbar = tk.Frame(root, bg=self.colors["panel"], padx=12, pady=10,
+                           highlightthickness=1, highlightbackground=self.colors["border"])
+        toolbar.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(toolbar, text="SCAN MODE", bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 6))
+        ttk.Combobox(toolbar, textvariable=self.mode_var, values=["combined", "movers", "watchlist"],
+                     state="readonly", width=12).pack(side="left", padx=(0, 8))
+        self.run_button = tk.Button(toolbar, text="▶  Run Scan", command=self.run_scan,
+                                    bg="#2367a3", fg="white", activebackground="#2d7abd",
+                                    activeforeground="white", relief="flat", padx=12, pady=4)
+        self.run_button.pack(side="left", padx=4)
+        self.auto_button = tk.Button(toolbar, text="Auto Refresh ON", command=self.toggle_auto_refresh,
+                                     bg=self.colors["panel2"], fg=self.colors["text"], relief="flat", padx=10, pady=4)
+        self.auto_button.pack(side="left", padx=4)
 
-        manual_frame.pack(
-            fill="x",
-            padx=5,
-            pady=(0, 5)
-        )
+        for text, var in [("HOD", self.hod_var), ("ORB", self.orb_var), ("Launch", self.launch_var),
+                          ("Radar", self.radar_var), ("Ignition", self.ignition_var),
+                          ("VWAP", self.reclaim_var), ("Entry", self.entry_var)]:
+            tk.Checkbutton(toolbar, text=text, variable=var, command=self.refresh_display_filters,
+                           bg=self.colors["panel"], fg=self.colors["text"], selectcolor=self.colors["panel2"],
+                           activebackground=self.colors["panel"], activeforeground=self.colors["text"]).pack(side="left", padx=3)
+        tk.Checkbutton(toolbar, text="Hide Wash", variable=self.hide_wash_var, command=self.refresh_display_filters,
+                       bg=self.colors["panel"], fg=self.colors["muted"], selectcolor=self.colors["panel2"],
+                       activebackground=self.colors["panel"], activeforeground=self.colors["text"]).pack(side="right", padx=4)
 
-        tk.Label(
-            manual_frame,
-            text="TOS Radar:"
-        ).pack(
-            side="left",
-            padx=(0, 5)
-        )
+        # ---------- Main split ----------
+        main = tk.PanedWindow(root, orient="horizontal", bg=self.colors["bg"], sashwidth=5, bd=0)
+        main.pack(fill="both", expand=True, padx=12)
+        left = tk.Frame(main, bg=self.colors["panel"], width=270,
+                        highlightthickness=1, highlightbackground=self.colors["border"])
+        right = tk.Frame(main, bg=self.colors["bg"])
+        main.add(left, minsize=230)
+        main.add(right, minsize=780)
 
-        self.manual_symbol_var = tk.StringVar()
+        # Left: manual radar/watchlist controls
+        tk.Label(left, text="MANUAL RADAR", bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(12, 8))
+        addrow = tk.Frame(left, bg=self.colors["panel"]); addrow.pack(fill="x", padx=10)
+        self.manual_symbol_entry = tk.Entry(addrow, textvariable=self.manual_symbol_var, width=10,
+                                            bg=self.colors["panel2"], fg=self.colors["text"], insertbackground="white",
+                                            relief="flat", font=("Consolas", 11))
+        self.manual_symbol_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        self.manual_symbol_entry.bind("<Return>", lambda event: self.add_manual_symbol())
+        tk.Button(addrow, text="+", command=self.add_manual_symbol, bg="#2367a3", fg="white",
+                  relief="flat", width=3).pack(side="left", padx=(6, 2), ipady=3)
+        tk.Button(addrow, text="−", command=self.remove_manual_symbol, bg=self.colors["panel2"], fg=self.colors["text"],
+                  relief="flat", width=3).pack(side="left", padx=2, ipady=3)
+        self.manual_radar_label = tk.Label(left, text="None", bg=self.colors["panel"], fg=self.colors["muted"],
+                                           justify="left", wraplength=235, anchor="nw")
+        self.manual_radar_label.pack(fill="x", padx=12, pady=(8, 16))
 
-        self.manual_symbol_entry = tk.Entry(
-            manual_frame,
-            textvariable=self.manual_symbol_var,
-            width=10
-        )
+        tk.Frame(left, bg=self.colors["border"], height=1).pack(fill="x", padx=10)
+        tk.Label(left, text="MARKET PULSE", bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(14, 8))
+        self.pulse_labels = {}
+        for key, label in [("tracking", "Tracking"), ("accelerating", "Accelerating"), ("ignition", "Ignition"), ("active", "Active"), ("extended", "Extended"), ("cooling", "Cooling")]:
+            rowf = tk.Frame(left, bg=self.colors["panel"]); rowf.pack(fill="x", padx=12, pady=3)
+            tk.Label(rowf, text=label, bg=self.colors["panel"], fg=self.colors["muted"]).pack(side="left")
+            val = tk.Label(rowf, text="0", bg=self.colors["panel"], fg=self.colors["text"], font=("Segoe UI", 11, "bold"))
+            val.pack(side="right"); self.pulse_labels[key] = val
+        self.stats_label = tk.Label(left, text="No Alert History", bg=self.colors["panel"], fg=self.colors["muted"],
+                                    justify="left", anchor="nw", wraplength=235)
+        self.stats_label.pack(fill="both", expand=True, padx=12, pady=(18, 10))
 
-        self.manual_symbol_entry.pack(
-            side="left",
-            padx=5
-        )
-
-        self.manual_symbol_entry.bind(
-            "<Return>",
-            lambda event: self.add_manual_symbol()
-        )
-
-        tk.Button(
-            manual_frame,
-            text="+ Add",
-            command=self.add_manual_symbol
-        ).pack(
-            side="left",
-            padx=5
-        )
-
-        tk.Button(
-            manual_frame,
-            text="- Remove",
-            command=self.remove_manual_symbol
-        ).pack(
-            side="left",
-            padx=5
-        )
-
-        self.manual_radar_label = tk.Label(
-            manual_frame,
-            text="Manual Radar: None",
-            anchor="w"
-        )
-
-        self.manual_radar_label.pack(
-            side="left",
-            padx=15
-        )
-
-        # =========================
-        # TABLE
-        # =========================
-        columns = [
-            "Symbol",
-            "Lifecycle",
-            "Action",
-            "State",
-
-            #"ORB",
-            #"TradeEligible",
-            #"Opportunity",
-            #"Float",
-            #"MarketCap",
-            #"Grade",
-            #"Upside%",
-            #"VWAP_Ext%",
-            #"WashStatus",
-            #"VWAP",
-            #"ORB_High",
-            #"ContGrade",
-
-            "FloatTurnover%",
-            "RVOL",
-            "Continuation",
-            "RadarScore",
-            "Score",
-
-            #"ATR",
-            #"ORB_Low",
-            #"ORB_Break",
-            #"Premarket",
-            #"EarlySignal",
-
-            "Gain%",
-            "Setup",
-            "Price",
-            "Entry",
-            "Stop",
-            "T1",
-            "T2",
-
-            #"T3"
-        ]
-
-        self.tree = ttk.Treeview(
-            root,
-            columns=columns,
-            show="headings"
-        )
-
-        # =========================
-        # ROW COLORS
-        # =========================
-        self.tree.tag_configure("hod",background="#ccffcc")
-        self.tree.tag_configure("orb",background="#d9f2ff")
-        self.tree.tag_configure("launch",background="#e6f0ff")
-        self.tree.tag_configure("radar",background="#e6ffff")
-        # NEW
-        self.tree.tag_configure("ignition",background="#fff0b3")
-        self.tree.tag_configure("reclaim",background="#f0f5ff")
-        self.tree.tag_configure("pullback",background="#fff7cc")
-        self.tree.tag_configure("extended",background="#ffe6cc")
-        self.tree.tag_configure("dead",background="#ffe6e6")
-        self.tree.tag_configure("entry",background="#d6b3ff")
-        self.tree.tag_configure("leader",background="#7dff7d")
-
+        # Right top: opportunities
+        opp = tk.Frame(right, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"])
+        opp.pack(fill="both", expand=True)
+        tk.Label(opp, text="OPPORTUNITIES", bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
+        columns = ["Symbol", "Signal", "Radar", "Lifecycle", "Price", "Gain%", "RVOL", "VolAccel", "RadarScore", "Action"]
+        table_frame = tk.Frame(opp, bg=self.colors["panel"]); table_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        widths = {"Symbol":72, "Signal":155, "Radar":105, "Lifecycle":135, "Price":70, "Gain%":68, "RVOL":62,
+                  "VolAccel":75, "RadarScore":82, "Action":110}
         for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=widths[col], minwidth=55, anchor="center" if col not in ("Signal","Lifecycle","Action") else "w")
+        sy = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        sx = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        sy.pack(side="right", fill="y"); sx.pack(side="bottom", fill="x"); self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        for tag, bg in [("hod","#1d3b2a"),("orb","#18354a"),("launch","#202f4a"),("radar","#18383b"),
+                        ("ignition","#4a3c16"),("reclaim","#24314a"),("pullback","#413a1d"),
+                        ("extended","#4a2f1f"),("dead","#452626"),("entry","#35264d"),("leader","#1e472c")]:
+            self.tree.tag_configure(tag, background=bg, foreground=self.colors["text"])
 
-            self.tree.heading(
-                col,
-                text=col
-            )
+        # Detail panel
+        detail = tk.Frame(right, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"])
+        detail.pack(fill="x", pady=(8, 0))
+        self.detail_title = tk.Label(detail, text="SELECT A SYMBOL", bg=self.colors["panel"], fg=self.colors["accent"],
+                                     font=("Segoe UI", 11, "bold"))
+        self.detail_title.pack(anchor="w", padx=12, pady=(10, 4))
+        detail_grid = tk.Frame(detail, bg=self.colors["panel"]); detail_grid.pack(fill="x", padx=12, pady=(0, 10))
+        self.detail_labels = {}
+        fields = [("Price","Price"),("VWAP","VWAP"),("Gain%","Gain"),("VWAP_Ext%","VWAP Ext"),
+                  ("RVOL","RVOL"),("RadarScore","Radar Score"),("RadarLifecycle","Radar State"),("RadarVolumeAccel","Vol Accel"),
+                  ("RadarPriceAccel%","Price Accel"),("RadarRankAccel","Rank Accel"),("RadarGainAccel","Gain Accel"),("RadarPersistence","Persistence"),
+                  ("ORB_High","ORB High"),("ORB_Low","ORB Low"),("Entry","Entry"),("Stop","Stop"),
+                  ("T1","T1"),("T2","T2"),("ATR","ATR"),("HOD_Dist%","HOD Dist")]
+        for i, (key, label) in enumerate(fields):
+            r, c = divmod(i, 4)
+            box = tk.Frame(detail_grid, bg=self.colors["panel2"], padx=8, pady=5)
+            box.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+            detail_grid.grid_columnconfigure(c, weight=1)
+            tk.Label(box, text=label.upper(), bg=self.colors["panel2"], fg=self.colors["muted"], font=("Segoe UI", 7, "bold")).pack(anchor="w")
+            value = tk.Label(box, text="—", bg=self.colors["panel2"], fg=self.colors["text"], font=("Segoe UI", 10, "bold"))
+            value.pack(anchor="w"); self.detail_labels[key] = value
 
-            self.tree.column(
-                col,
-                width=90
-            )
-
-        # -------------------------
-        # Custom column widths
-        # -------------------------
-        self.tree.column(
-            "Symbol",
-            width=70
-        )
-
-        self.tree.column(
-            "Lifecycle",
-            width=180
-        )
-
-        self.tree.column(
-            "Action",
-            width=140
-        )
-
-        self.tree.column(
-            "State",
-            width=170
-        )
-
-        self.tree.column(
-            "Price",
-            width=70
-        )
-
-        self.tree.column(
-            "RVOL",
-            width=70
-        )
-
-        self.tree.column(
-            "Gain%",
-            width=75
-        )
-
-        self.tree.column(
-            "RadarScore",
-            width=85
-        )
-
-        self.tree.column(
-            "Score",
-            width=70
-        )
-
-        self.tree.column(
-            "Setup",
-            width=110
-        )
-
-        self.tree.column(
-            "Entry",
-            width=70
-        )
-
-        self.tree.column(
-            "Stop",
-            width=70
-        )
-
-        self.tree.column(
-            "T1",
-            width=70
-        )
-
-        self.tree.column(
-            "T2",
-            width=70
-        )
-
-        # Scrollbars keep the opportunity table usable on smaller screens.
-        tree_scroll_y = ttk.Scrollbar(
-            root, orient="vertical", command=self.tree.yview
-        )
-        tree_scroll_x = ttk.Scrollbar(
-            root, orient="horizontal", command=self.tree.xview
-        )
-        self.tree.configure(
-            yscrollcommand=tree_scroll_y.set,
-            xscrollcommand=tree_scroll_x.set
-        )
-
-        tree_scroll_y.pack(side="right", fill="y")
-        tree_scroll_x.pack(side="bottom", fill="x")
-        self.tree.pack(
-            fill="both",
-            expand=True
-        )
-
-        # Start auto-refresh on launch. The scan itself runs in a worker, so
-        # startup remains responsive even when fundamentals must be fetched.
+        # Event feed
+        feed = tk.Frame(root, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"])
+        feed.pack(fill="x", padx=12, pady=8)
+        tk.Label(feed, text="LIVE EVENT FEED", bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(7, 3))
+        self.event_feed = tk.Listbox(feed, height=4, bg=self.colors["panel"], fg=self.colors["muted"],
+                                     selectbackground="#294663", relief="flat", borderwidth=0,
+                                     font=("Consolas", 9))
+        self.event_feed.pack(fill="x", padx=8, pady=(0, 8))
+        self._add_event("Kaizen Trading Desk ready")
+        self.update_manual_radar_label()
         self.schedule_refresh()
+
+    def _add_event(self, message):
+        if not hasattr(self, "event_feed"):
+            return
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.event_feed.insert(0, f"{stamp}  {message}")
+        while self.event_feed.size() > 50:
+            self.event_feed.delete("end")
+
+    def _format_compact_number(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return value if value not in (None, "") else "—"
+        if value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:.2f}B"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return f"{value:g}"
+
+    def _on_tree_select(self, event=None):
+        selection = self.tree.selection()
+        if not selection or self.display_df is None or self.display_df.empty:
+            return
+        symbol = self.tree.item(selection[0], "values")[0]
+        matches = self.display_df[self.display_df["Symbol"].astype(str) == str(symbol)]
+        if matches.empty:
+            return
+        row = matches.iloc[0]
+        self.detail_title.config(text=f"{symbol}  •  {row.get('State', '')}")
+        for key, label in self.detail_labels.items():
+            value = row.get(key, "")
+            if key in ("Float", "MarketCap"):
+                value = self._format_compact_number(value)
+            elif value in (None, "") or (isinstance(value, float) and pd.isna(value)):
+                value = "—"
+            label.config(text=str(value))
+
+    def _update_market_pulse(self, df, radar_summary=None):
+        if not hasattr(self, "pulse_labels"):
+            return
+        if radar_summary is None:
+            radar_summary = {
+                "tracking": 0, "accelerating": 0, "ignition": 0,
+                "active": 0, "extended": 0, "cooling": 0,
+            }
+            if df is not None and not df.empty and "RadarLifecycle" in df.columns:
+                radar_states = df["RadarLifecycle"].astype(str).str.upper()
+                radar_summary["tracking"] = len(df)
+                for key in ("accelerating", "ignition", "active", "extended", "cooling"):
+                    radar_summary[key] = int(radar_states.eq(key.upper()).sum())
+        for key, label in self.pulse_labels.items():
+            label.config(text=str(radar_summary.get(key, 0)))
 
     # =========================
     # MANUAL / TOS RADAR
@@ -901,16 +714,18 @@ class ORBDashboard:
         try:
             df = self.scanner.run_scan(mode=mode)
             elapsed = round(time.time() - started, 2)
-            self.scan_results.put(("success", df, elapsed, filters))
+            radar_summary = self.scanner.get_radar_summary()
+            radar_events = self.scanner.drain_radar_events()
+            self.scan_results.put(("success", df, elapsed, filters, radar_summary, radar_events))
         except Exception as exc:
             elapsed = round(time.time() - started, 2)
-            self.scan_results.put(("error", exc, elapsed, filters))
+            self.scan_results.put(("error", exc, elapsed, filters, {}, []))
 
     def _poll_scan_results(self):
         """Apply completed worker results safely on Tkinter's UI thread."""
         try:
             while True:
-                kind, payload, elapsed, filters = self.scan_results.get_nowait()
+                kind, payload, elapsed, filters, radar_summary, radar_events = self.scan_results.get_nowait()
                 self.scan_in_progress = False
                 self.run_button.config(state="normal", text="Run Scan")
 
@@ -920,8 +735,14 @@ class ORBDashboard:
                     self.last_scan_label.config(text=f"Last Scan: Error ({elapsed}s)")
                 else:
                     self.last_scan_df = payload.copy() if payload is not None else pd.DataFrame()
+                    self.last_radar_summary = dict(radar_summary or {})
                     df = self._apply_dashboard_filters(self.last_scan_df, filters)
-                    self.update_table(df)
+                    self.update_table(df, radar_summary=radar_summary)
+                    for event in radar_events:
+                        self._add_event(
+                            f"{event.get('symbol', '')}  RADAR {event.get('old_state', '')} → {event.get('new_state', '')}  "
+                            f"• Score {event.get('score', '')}  • {event.get('reason', '')}"
+                        )
                     self.update_alert_stats()
                     self.status_label.config(text=self.get_status_text())
 
@@ -955,7 +776,7 @@ class ORBDashboard:
             return
         filters = self._capture_filter_state()
         df = self._apply_dashboard_filters(self.last_scan_df, filters)
-        self.update_table(df)
+        self.update_table(df, radar_summary=self.last_radar_summary)
         self.scan_status_label.config(
             text=f"Ready • {len(df)} setups", fg="green"
         )
@@ -1007,222 +828,87 @@ class ORBDashboard:
     # =========================
     # UPDATE TABLE
     # =========================
-    def update_table(self, df):
+    def update_table(self, df, radar_summary=None):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
 
-        # Clear old rows
-        for row in self.tree.get_children():
-            self.tree.delete(row)
+        self.display_df = df.copy() if df is not None else pd.DataFrame()
+        self._update_market_pulse(self.display_df, radar_summary)
 
         if df is None or df.empty:
+            self.detail_title.config(text="SELECT A SYMBOL")
+            for label in self.detail_labels.values():
+                label.config(text="—")
             return
 
         for _, row in df.iterrows():
+            symbol = row.get("Symbol", "")
+            current_state = row.get("State", "")
+            previous_state = self.previous_states.get(symbol)
 
-            symbol = row["Symbol"]
-
-            current_state = row["State"]
-
-            previous_state = (
-                self.previous_states.get(symbol)
-            )
-
-            # ==========================================
-            # IMPORTANT STATE TRANSITIONS
-            # ==========================================
             important_transitions = [
-
-                (
-                    "🔵 LAUNCH PAD",
-                    "🟢 ORB BREAKOUT"
-                ),
-
-                (
-                    "🔷 VWAP RECLAIM",
-                    "🟢 ORB BREAKOUT"
-                ),
-
-                (
-                    "🟡 PULLBACK",
-                    "🟢 HOD ATTACK"
-                ),
-
-                (
-                    "🔵 LAUNCH PAD",
-                    "🟢 HOD ATTACK"
-                ),
-
-                (
-                    "🔷 VWAP RECLAIM",
-                    "🟣 ENTRY ALERT"
-                ),
-
-                # NEW
-                (
-                    "⚡ MOMENTUM IGNITION",
-                    "🔵 LAUNCH PAD"
-                ),
-
-                (
-                    "⚡ MOMENTUM IGNITION",
-                    "🟣 ENTRY ALERT"
-                ),
-
-                (
-                    "⚡ MOMENTUM IGNITION",
-                    "🟢 ORB BREAKOUT"
-                ),
-
-                (
-                    "⚡ MOMENTUM IGNITION",
-                    "🟢 HOD ATTACK"
-                ),
+                ("🔵 LAUNCH PAD", "🟢 ORB BREAKOUT"),
+                ("🔷 VWAP RECLAIM", "🟢 ORB BREAKOUT"),
+                ("🟡 PULLBACK", "🟢 HOD ATTACK"),
+                ("🔵 LAUNCH PAD", "🟢 HOD ATTACK"),
+                ("🔷 VWAP RECLAIM", "🟣 ENTRY ALERT"),
+                ("⚡ MOMENTUM IGNITION", "🔵 LAUNCH PAD"),
+                ("⚡ MOMENTUM IGNITION", "🟣 ENTRY ALERT"),
+                ("⚡ MOMENTUM IGNITION", "🟢 ORB BREAKOUT"),
+                ("⚡ MOMENTUM IGNITION", "🟢 HOD ATTACK"),
             ]
 
-            # ==========================================
-            # MOMENTUM IGNITION ALERT
-            # ==========================================
             entered_ignition = (
-                "MOMENTUM IGNITION"
-                in str(current_state).upper()
+                "MOMENTUM IGNITION" in str(current_state).upper()
                 and previous_state != current_state
             )
-
             if entered_ignition:
-
-                ignition_old_state = (
-                    previous_state
-                    if previous_state is not None
-                    else "NEW DISCOVERY"
-                )
-
-                self.trigger_alert(
-                    symbol,
-                    ignition_old_state,
-                    current_state,
-                    row
-                )
-
-            # ==========================================
-            # CONFIRMED ALERT TRANSITIONS
-            # ==========================================
-            elif (
-                    previous_state,
-                    current_state
-            ) in important_transitions:
-
-                self.trigger_alert(
-                    symbol,
-                    previous_state,
-                    current_state,
-                    row
-                )
-
+                self.trigger_alert(symbol, previous_state if previous_state is not None else "NEW DISCOVERY", current_state, row)
+            elif (previous_state, current_state) in important_transitions:
+                self.trigger_alert(symbol, previous_state, current_state, row)
             self.previous_states[symbol] = current_state
 
-            state = str(row.get("State","")).upper()
+            state = str(current_state).upper()
+            lifecycle = str(row.get("Lifecycle", "")).upper()
+            if "ENTRY ALERT" in lifecycle: tag = "entry"
+            elif "ORB CONFIRMED" in lifecycle: tag = "orb"
+            elif "HOD ATTACK" in lifecycle: tag = "hod"
+            elif "TREND LEADER" in lifecycle: tag = "leader"
+            elif "EXTENDED" in lifecycle: tag = "extended"
+            elif "EXIT ZONE" in lifecycle: tag = "dead"
+            elif "MOMENTUM IGNITION" in lifecycle: tag = "ignition"
+            elif "LAUNCH PAD" in lifecycle: tag = "launch"
+            elif "MARKET RADAR" in lifecycle: tag = "radar"
+            elif "MOMENTUM" in lifecycle or "DISCOVERY" in lifecycle: tag = "reclaim"
+            elif "HOD ATTACK" in state: tag = "hod"
+            elif "ORB BREAKOUT" in state: tag = "orb"
+            elif "MOMENTUM IGNITION" in state: tag = "ignition"
+            elif "MARKET RADAR" in state: tag = "radar"
+            elif "ENTRY ALERT" in state: tag = "entry"
+            elif "LAUNCH PAD" in state: tag = "launch"
+            elif "VWAP RECLAIM" in state: tag = "reclaim"
+            elif "PULLBACK" in state: tag = "pullback"
+            elif "EXTENDED" in state: tag = "extended"
+            else: tag = "dead"
 
-            lifecycle = str(row.get("Lifecycle","")).upper()
-
-            tag = ""
-
-            # ==========================================
-            # LIFECYCLE COLORS
-            # ==========================================
-            if "ENTRY ALERT" in lifecycle:
-                tag = "entry"
-
-            elif "ORB CONFIRMED" in lifecycle:
-                tag = "orb"
-
-            elif "HOD ATTACK" in lifecycle:
-                tag = "hod"
-
-            elif "TREND LEADER" in lifecycle:
-                tag = "leader"
-
-            elif "EXTENDED" in lifecycle:
-                tag = "extended"
-
-            elif "EXIT ZONE" in lifecycle:
-                tag = "dead"
-
-            elif "MOMENTUM IGNITION" in lifecycle:
-                tag = "ignition"
-
-            elif "LAUNCH PAD" in lifecycle:
-                tag = "launch"
-
-            elif "MARKET RADAR" in lifecycle:
-                tag = "radar"
-
-            elif "MOMENTUM" in lifecycle:
-                tag = "reclaim"
-
-            elif "DISCOVERY" in lifecycle:
-                tag = "reclaim"
-
-            # ==========================================
-            # FALLBACK TO STATE
-            # ==========================================
-            elif "HOD ATTACK" in state:
-                tag = "hod"
-
-            elif "ORB BREAKOUT" in state:
-                tag = "orb"
-
-            elif "MOMENTUM IGNITION" in state:
-                tag = "ignition"
-
-            elif "MARKET RADAR" in state:
-                tag = "radar"
-
-            elif "ENTRY ALERT" in state:
-                tag = "entry"
-
-            elif "LAUNCH PAD" in state:
-                tag = "launch"
-
-            elif "VWAP RECLAIM" in state:
-                tag = "reclaim"
-
-            elif "PULLBACK" in state:
-                tag = "pullback"
-
-            elif "EXTENDED" in state:
-                tag = "extended"
-
-            else:
-                tag = "dead"
-
-            print(
+            self.tree.insert("", "end", values=(
                 symbol,
-                tag,
-                state
-            )
+                row.get("State", ""),
+                row.get("RadarLifecycle", ""),
+                row.get("Lifecycle", ""),
+                row.get("Price", ""),
+                row.get("Gain%", ""),
+                row.get("RVOL", ""),
+                row.get("RadarVolumeAccel", ""),
+                row.get("RadarScore", ""),
+                row.get("Action", ""),
+            ), tags=(tag,))
 
-            self.tree.insert(
-                "",
-                "end",
-                values=(
-                    row.get("Symbol", ""),
-                    row.get("Lifecycle", ""),
-                    row.get("Action", ""),
-                    row.get("State", ""),
-                    row.get("FloatTurnover%",""),
-                    row.get("RVOL",""),
-                    row.get("Continuation",""),
-                    row.get("RadarScore", ""),
-                    row.get("Score",""),
-                    row.get("Gain%",""),
-                    row.get("Setup",""),
-                    row.get("Price",""),
-                    row.get("Entry",""),
-                    row.get("Stop",""),
-                    row.get("T1",""),
-                    row.get("T2",""),
-                ),
-                tags=(tag,)
-            )
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+            self._on_tree_select()
 
 
 # =========================
