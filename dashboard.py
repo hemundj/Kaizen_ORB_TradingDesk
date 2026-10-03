@@ -5,6 +5,8 @@ from datetime import datetime
 import time
 import csv
 import os
+import threading
+import queue
 
 from scanner import KaizenScanner
 from market import market_is_open
@@ -42,14 +44,20 @@ class ORBDashboard:
         if not self.auto_refresh:
             return
 
-        # Prevent multiple refresh loops
-        if self.refresh_job is not None:
-            self.root.after_cancel(self.refresh_job)
-            self.refresh_job = None
+        # This callback represents the scheduled refresh itself. Clear the ID
+        # before starting so completion can schedule the next cycle.
+        self.refresh_job = None
 
         print("Auto Refresh Running")
-
         self.run_scan()
+
+    def _schedule_next_auto_refresh(self):
+        """Schedule the next cycle after the current scan has completed."""
+        if not self.auto_refresh:
+            return
+
+        if self.refresh_job is not None:
+            self.root.after_cancel(self.refresh_job)
 
         self.refresh_job = self.root.after(
             45000,
@@ -130,6 +138,7 @@ class ORBDashboard:
                     "Price",
                     "RVOL",
                     "Continuation",
+                    "RadarScore",
                     "GainPercent",
                     "IgnitionReason"
                 ])
@@ -142,6 +151,7 @@ class ORBDashboard:
                 row.get("Price", ""),
                 row.get("RVOL", ""),
                 row.get("Continuation", ""),
+                row.get("RadarScore", ""),
                 row.get("Gain%", ""),
                 row.get("IgnitionReason", "")
             ])
@@ -164,7 +174,65 @@ class ORBDashboard:
 
         try:
 
-            df = pd.read_csv(filename)
+            alert_columns = [
+                "Timestamp",
+                "Symbol",
+                "OldState",
+                "NewState",
+                "Price",
+                "RVOL",
+                "Continuation",
+                "RadarScore",
+                "GainPercent",
+                "IgnitionReason"
+            ]
+
+            rows = []
+
+            with open(
+                    filename,
+                    "r",
+                    newline="",
+                    encoding="utf-8-sig"
+            ) as f:
+
+                reader = csv.reader(f)
+
+                # Skip the historical header.
+                next(reader, None)
+
+                for line_number, row in enumerate(
+                        reader,
+                        start=2
+                ):
+
+                    if not row:
+                        continue
+
+                    # Legacy Kaizen alert format:
+                    # 9 columns, before IgnitionReason was added.
+                    if len(row) == 9:
+                        row.append("")
+
+                    # Current Kaizen alert format:
+                    # 10 columns.
+                    elif len(row) == 10:
+                        pass
+
+                    else:
+                        print(
+                            f"ALERT LOAD WARNING: "
+                            f"line {line_number} has "
+                            f"{len(row)} fields"
+                        )
+                        continue
+
+                    rows.append(row)
+
+            df = pd.DataFrame(
+                rows,
+                columns=alert_columns
+            )
 
         except Exception as e:
 
@@ -240,7 +308,8 @@ class ORBDashboard:
 
         self.root = root
         self.root.title("Kaizen ORB Trading Desk")
-        self.root.geometry("1100x600")
+        self.root.geometry("1450x780")
+        self.root.minsize(1050, 620)
 
         self.scanner = KaizenScanner()
 
@@ -250,6 +319,17 @@ class ORBDashboard:
 
         self.refresh_job = None
 
+        # Background scan worker state. Tkinter widgets must only be touched
+        # from the main UI thread; scanner/network work runs in a worker.
+        self.scan_in_progress = False
+        self.scan_results = queue.Queue()
+        self.scan_started_at = None
+        self.pending_rescan = False
+        self.last_scan_df = pd.DataFrame()
+
+        # Poll worker results without blocking the Tkinter event loop.
+        self.root.after(100, self._poll_scan_results)
+
         # =========================
         # TOP CONTROL PANEL
         # =========================
@@ -257,14 +337,11 @@ class ORBDashboard:
         control_frame.pack(fill="x", pady=5)
 
         self.hide_wash_var = tk.BooleanVar(value=False)
-
         self.hod_var = tk.BooleanVar(value=True)
         self.orb_var = tk.BooleanVar(value=True)
         self.launch_var = tk.BooleanVar(value=True)
-
-        # NEW
+        self.radar_var = tk.BooleanVar(value=True)
         self.ignition_var = tk.BooleanVar(value=True)
-
         self.reclaim_var = tk.BooleanVar(value=True)
         self.entry_var = tk.BooleanVar(value=True)
 
@@ -272,21 +349,28 @@ class ORBDashboard:
             control_frame,
             text="HOD Attack",
             variable=self.hod_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="ORB Breakout",
             variable=self.orb_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="Launch Pad",
             variable=self.launch_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
+        ).pack(side="left", padx=5)
+
+        tk.Checkbutton(
+            control_frame,
+            text="Market Radar",
+            variable=self.radar_var,
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         # NEW
@@ -294,21 +378,21 @@ class ORBDashboard:
             control_frame,
             text="Momentum Ignition",
             variable=self.ignition_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="VWAP Reclaim",
             variable=self.reclaim_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         tk.Checkbutton(
             control_frame,
             text="Entry Alert",
             variable=self.entry_var,
-            command=self.run_scan
+            command=self.refresh_display_filters
         ).pack(side="left", padx=5)
 
         tk.Label(
@@ -388,10 +472,21 @@ class ORBDashboard:
             padx=10
         )
 
+        self.scan_status_label = tk.Label(
+            control_frame,
+            text="Ready",
+            fg="gray"
+        )
+        self.scan_status_label.pack(
+            side="right",
+            padx=10
+        )
+
         tk.Checkbutton(
             control_frame,
             text="Hide Wash Risk",
-            variable=self.hide_wash_var
+            variable=self.hide_wash_var,
+            command=self.refresh_display_filters
         ).pack(
             side="left",
             padx=5
@@ -509,6 +604,7 @@ class ORBDashboard:
             "FloatTurnover%",
             "RVOL",
             "Continuation",
+            "RadarScore",
             "Score",
 
             #"ATR",
@@ -537,56 +633,18 @@ class ORBDashboard:
         # =========================
         # ROW COLORS
         # =========================
-        self.tree.tag_configure(
-            "hod",
-            background="#ccffcc"
-        )
-
-        self.tree.tag_configure(
-            "orb",
-            background="#d9f2ff"
-        )
-
-        self.tree.tag_configure(
-            "launch",
-            background="#e6f0ff"
-        )
-
+        self.tree.tag_configure("hod",background="#ccffcc")
+        self.tree.tag_configure("orb",background="#d9f2ff")
+        self.tree.tag_configure("launch",background="#e6f0ff")
+        self.tree.tag_configure("radar",background="#e6ffff")
         # NEW
-        self.tree.tag_configure(
-            "ignition",
-            background="#fff0b3"
-        )
-
-        self.tree.tag_configure(
-            "reclaim",
-            background="#f0f5ff"
-        )
-
-        self.tree.tag_configure(
-            "pullback",
-            background="#fff7cc"
-        )
-
-        self.tree.tag_configure(
-            "extended",
-            background="#ffe6cc"
-        )
-
-        self.tree.tag_configure(
-            "dead",
-            background="#ffe6e6"
-        )
-
-        self.tree.tag_configure(
-            "entry",
-            background="#d6b3ff"
-        )
-
-        self.tree.tag_configure(
-            "leader",
-            background="#7dff7d"
-        )
+        self.tree.tag_configure("ignition",background="#fff0b3")
+        self.tree.tag_configure("reclaim",background="#f0f5ff")
+        self.tree.tag_configure("pullback",background="#fff7cc")
+        self.tree.tag_configure("extended",background="#ffe6cc")
+        self.tree.tag_configure("dead",background="#ffe6e6")
+        self.tree.tag_configure("entry",background="#d6b3ff")
+        self.tree.tag_configure("leader",background="#7dff7d")
 
         for col in columns:
 
@@ -639,6 +697,11 @@ class ORBDashboard:
         )
 
         self.tree.column(
+            "RadarScore",
+            width=85
+        )
+
+        self.tree.column(
             "Score",
             width=70
         )
@@ -668,12 +731,27 @@ class ORBDashboard:
             width=70
         )
 
+        # Scrollbars keep the opportunity table usable on smaller screens.
+        tree_scroll_y = ttk.Scrollbar(
+            root, orient="vertical", command=self.tree.yview
+        )
+        tree_scroll_x = ttk.Scrollbar(
+            root, orient="horizontal", command=self.tree.xview
+        )
+        self.tree.configure(
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set
+        )
+
+        tree_scroll_y.pack(side="right", fill="y")
+        tree_scroll_x.pack(side="bottom", fill="x")
         self.tree.pack(
             fill="both",
             expand=True
         )
 
-        # Start auto-refresh on launch
+        # Start auto-refresh on launch. The scan itself runs in a worker, so
+        # startup remains responsive even when fundamentals must be fetched.
         self.schedule_refresh()
 
     # =========================
@@ -707,8 +785,8 @@ class ORBDashboard:
                 f"{symbol}"
             )
 
-            # Immediately run Kaizen instead of
-            # waiting for the next 45-second cycle.
+            # Request a refresh. If a scan is already running, queue one
+            # follow-up scan instead of blocking the UI or overlapping workers.
             self.run_scan()
 
     def remove_manual_symbol(self):
@@ -778,61 +856,143 @@ class ORBDashboard:
     # =========================
     # RUN SCAN
     # =========================
-    def run_scan(self):
+    def _capture_filter_state(self):
+        """Capture Tkinter variable values on the UI thread."""
+        return {
+            "hide_wash": self.hide_wash_var.get(),
+            "hod": self.hod_var.get(),
+            "orb": self.orb_var.get(),
+            "launch": self.launch_var.get(),
+            "radar": self.radar_var.get(),
+            "ignition": self.ignition_var.get(),
+            "reclaim": self.reclaim_var.get(),
+            "entry": self.entry_var.get(),
+        }
 
-        start = time.time()
+    def run_scan(self):
+        """Start a scan without blocking Tkinter's main event loop."""
+
+        if self.scan_in_progress:
+            # Remember one requested refresh. This is useful when a ticker is
+            # added/removed or a filter changes during an active scan.
+            self.pending_rescan = True
+            self.scan_status_label.config(text="Scan running • refresh queued", fg="darkorange")
+            return
 
         mode = self.mode_var.get()
+        filters = self._capture_filter_state()
 
-        df = self.scanner.run_scan(
-            mode=mode
+        self.scan_in_progress = True
+        self.pending_rescan = False
+        self.scan_started_at = time.time()
+        self.run_button.config(state="disabled", text="Scanning…")
+        self.scan_status_label.config(text="● Scanning", fg="blue")
+
+        worker = threading.Thread(
+            target=self._scan_worker,
+            args=(mode, filters),
+            daemon=True
+        )
+        worker.start()
+
+    def _scan_worker(self, mode, filters):
+        """Background worker: scanner/network calls only; no Tkinter calls."""
+        started = time.time()
+        try:
+            df = self.scanner.run_scan(mode=mode)
+            elapsed = round(time.time() - started, 2)
+            self.scan_results.put(("success", df, elapsed, filters))
+        except Exception as exc:
+            elapsed = round(time.time() - started, 2)
+            self.scan_results.put(("error", exc, elapsed, filters))
+
+    def _poll_scan_results(self):
+        """Apply completed worker results safely on Tkinter's UI thread."""
+        try:
+            while True:
+                kind, payload, elapsed, filters = self.scan_results.get_nowait()
+                self.scan_in_progress = False
+                self.run_button.config(state="normal", text="Run Scan")
+
+                if kind == "error":
+                    print("SCAN ERROR:", payload)
+                    self.scan_status_label.config(text="Scan error", fg="red")
+                    self.last_scan_label.config(text=f"Last Scan: Error ({elapsed}s)")
+                else:
+                    self.last_scan_df = payload.copy() if payload is not None else pd.DataFrame()
+                    df = self._apply_dashboard_filters(self.last_scan_df, filters)
+                    self.update_table(df)
+                    self.update_alert_stats()
+                    self.status_label.config(text=self.get_status_text())
+
+                    scan_time = datetime.now().strftime("%H:%M:%S")
+                    self.last_scan_label.config(
+                        text=f"Last Scan: {scan_time} ({elapsed}s)"
+                    )
+                    self.scan_status_label.config(
+                        text=f"Ready • {len(df)} setups", fg="green"
+                    )
+                    self.root.title(
+                        f"Kaizen ORB Trading Desk ({len(df)} setups)"
+                    )
+
+                # If the user changed the watchlist/filters while scanning, run
+                # exactly one fresh scan now that the worker has completed.
+                if self.pending_rescan:
+                    self.pending_rescan = False
+                    self.root.after(10, self.run_scan)
+                else:
+                    self._schedule_next_auto_refresh()
+
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(100, self._poll_scan_results)
+
+    def refresh_display_filters(self):
+        """Re-filter the most recent scan instantly without another API scan."""
+        if self.last_scan_df is None or self.last_scan_df.empty:
+            return
+        filters = self._capture_filter_state()
+        df = self._apply_dashboard_filters(self.last_scan_df, filters)
+        self.update_table(df)
+        self.scan_status_label.config(
+            text=f"Ready • {len(df)} setups", fg="green"
+        )
+        self.root.title(
+            f"Kaizen ORB Trading Desk ({len(df)} setups)"
         )
 
-        if (
-                self.hide_wash_var.get()
-                and not df.empty
-                and "WashStatus" in df.columns
-        ):
+    def _apply_dashboard_filters(self, df, filters):
+        """Apply display-only filters after scanner work has completed."""
+        if df is None:
+            return pd.DataFrame()
 
-            df = df[
-                df["WashStatus"] == "CLEAR"
-            ]
+        df = df.copy()
+
+        if (
+            filters["hide_wash"]
+            and not df.empty
+            and "WashStatus" in df.columns
+        ):
+            df = df[df["WashStatus"] == "CLEAR"]
 
         allowed_states = []
+        state_flags = [
+            ("hod", "HOD ATTACK"),
+            ("orb", "ORB BREAKOUT"),
+            ("launch", "LAUNCH PAD"),
+            ("radar", "MARKET RADAR"),
+            ("ignition", "MOMENTUM IGNITION"),
+            ("reclaim", "VWAP RECLAIM"),
+            ("entry", "ENTRY ALERT"),
+        ]
 
-        if self.hod_var.get():
-            allowed_states.append(
-                "HOD ATTACK"
-            )
+        for flag, state in state_flags:
+            if filters[flag]:
+                allowed_states.append(state)
 
-        if self.orb_var.get():
-            allowed_states.append(
-                "ORB BREAKOUT"
-            )
-
-        if self.launch_var.get():
-            allowed_states.append(
-                "LAUNCH PAD"
-            )
-
-        # NEW
-        if self.ignition_var.get():
-            allowed_states.append(
-                "MOMENTUM IGNITION"
-            )
-
-        if self.reclaim_var.get():
-            allowed_states.append(
-                "VWAP RECLAIM"
-            )
-
-        if self.entry_var.get():
-            allowed_states.append(
-                "ENTRY ALERT"
-            )
-
-        if allowed_states and not df.empty:
-
+        if allowed_states and not df.empty and "State" in df.columns:
             df = df[
                 df["State"].apply(
                     lambda x: any(
@@ -842,35 +1002,7 @@ class ORBDashboard:
                 )
             ]
 
-        elapsed = round(
-            time.time() - start,
-            2
-        )
-
-        self.update_table(df)
-
-        self.update_alert_stats()
-
-        self.status_label.config(
-            text=self.get_status_text()
-        )
-
-        scan_time = datetime.now().strftime(
-            "%H:%M:%S"
-        )
-
-        self.last_scan_label.config(
-            text=(
-                f"Last Scan: "
-                f"{scan_time} "
-                f"({elapsed}s)"
-            )
-        )
-
-        self.root.title(
-            f"Kaizen ORB Dashboard "
-            f"({len(df)} setups)"
-        )
+        return df
 
     # =========================
     # UPDATE TABLE
@@ -1020,6 +1152,9 @@ class ORBDashboard:
             elif "LAUNCH PAD" in lifecycle:
                 tag = "launch"
 
+            elif "MARKET RADAR" in lifecycle:
+                tag = "radar"
+
             elif "MOMENTUM" in lifecycle:
                 tag = "reclaim"
 
@@ -1037,6 +1172,9 @@ class ORBDashboard:
 
             elif "MOMENTUM IGNITION" in state:
                 tag = "ignition"
+
+            elif "MARKET RADAR" in state:
+                tag = "radar"
 
             elif "ENTRY ALERT" in state:
                 tag = "entry"
@@ -1073,6 +1211,7 @@ class ORBDashboard:
                     row.get("FloatTurnover%",""),
                     row.get("RVOL",""),
                     row.get("Continuation",""),
+                    row.get("RadarScore", ""),
                     row.get("Score",""),
                     row.get("Gain%",""),
                     row.get("Setup",""),

@@ -435,6 +435,7 @@ class KaizenScanner:
         # Reset tracking at the beginning of a new day
         if current_date != self.discovery_seen_date:
             self.previous_movers = set()
+            self.mover_history = {}
             self.discovery_seen_date = current_date
             self.movers_initialized = False
 
@@ -478,6 +479,7 @@ class KaizenScanner:
             mover = mover_lookup.get(symbol, {})
             current_rank = mover.get("rank", 0) or 0
             current_price = mover.get("price", 0) or 0
+            current_percent_change = mover.get("percent_change", 0) or 0
 
             try:
                 current_rank = int(current_rank)
@@ -489,7 +491,13 @@ class KaizenScanner:
             except (TypeError, ValueError):
                 current_price = 0
 
+            try:
+                current_percent_change = float(current_percent_change)
+            except (TypeError, ValueError):
+                current_percent_change = 0
+
             history = self.mover_history.setdefault(symbol, {
+                # Existing re-entry tracking
                 "last_entry_price": 0.0,
                 "last_entry_rank": 0,
                 "reentry_count": 0,
@@ -497,40 +505,169 @@ class KaizenScanner:
                 "entry_price_change_pct": 0.0,
                 "rank_improvement": 0,
                 "ignition_timestamp": None,
+
+                # ==========================================
+                # MARKET RADAR MEMORY
+                # ==========================================
+                "first_seen": None,
+                "last_seen": None,
+
+                "observation_count": 0,
+                "consecutive_scans": 0,
+
+                "previous_price": 0.0,
+                "previous_rank": 0,
+                "previous_percent_change": 0.0,
+
+                "price_accel_pct": 0.0,
+                "rank_accel": 0,
+                "percent_change_accel": 0.0,
             })
 
-            # Only calculate re-entry acceleration when the symbol has newly
-            # returned to the mover list.
+            # ==========================================
+            # MARKET RADAR OBSERVATION TRACKING
+            # ==========================================
+
+            now = datetime.now()
+
+            previous_price = float(
+                history.get("previous_price", 0) or 0
+            )
+
+            previous_rank = int(
+                history.get("previous_rank", 0) or 0
+            )
+
+            previous_percent_change = float(
+                history.get("previous_percent_change", 0) or 0
+            )
+
+            # First time Kaizen has seen this ticker today
+            if history["first_seen"] is None:
+                history["first_seen"] = now
+
+            history["last_seen"] = now
+
+            # Count every scan in which the ticker appears
+            history["observation_count"] += 1
+
+            # ==========================================
+            # CONSECUTIVE MOVER-LIST PERSISTENCE
+            # ==========================================
+
             if symbol in entered_symbols:
-                previous_entry_price = history.get("last_entry_price", 0) or 0
-                previous_entry_rank = history.get("last_entry_rank", 0) or 0
+
+                # New entry or re-entry starts a new consecutive streak.
+                history["consecutive_scans"] = 1
+
+            else:
+
+                # Stock remained on the mover list from the previous scan.
+                history["consecutive_scans"] += 1
+
+            # ==========================================
+            # SCAN-TO-SCAN ACCELERATION
+            # ==========================================
+
+            # Only calculate true scan-to-scan acceleration if the ticker
+            # remained on the mover list. A re-entry is handled separately
+            # by the existing mover re-entry logic below.
+
+            if symbol not in entered_symbols:
+
+                if previous_price > 0 and current_price > 0:
+                    history["price_accel_pct"] = round(
+                        (
+                                (current_price - previous_price)
+                                / previous_price
+                        ) * 100,
+                        2
+                    )
+                else:
+                    history["price_accel_pct"] = 0.0
+
+                if previous_rank > 0 and current_rank > 0:
+
+                    # Positive number means the ticker moved toward rank #1.
+                    history["rank_accel"] = (
+                            previous_rank - current_rank
+                    )
+
+                else:
+                    history["rank_accel"] = 0
+
+                history["percent_change_accel"] = round(
+                    current_percent_change
+                    - previous_percent_change,
+                    2
+                )
+
+            else:
+
+                # Do not treat a re-entry after an absence as ordinary
+                # scan-to-scan acceleration.
+                history["price_accel_pct"] = 0.0
+                history["rank_accel"] = 0
+                history["percent_change_accel"] = 0.0
+
+            # Save this observation for comparison on the next scan
+            history["previous_price"] = current_price
+            history["previous_rank"] = current_rank
+            history["previous_percent_change"] = current_percent_change
+
+            # ==========================================
+            # EXISTING MOVER RE-ENTRY TRACKING
+            # ==========================================
+
+            if symbol in entered_symbols:
+
+                previous_entry_price = (
+                        history.get("last_entry_price", 0) or 0
+                )
+
+                previous_entry_rank = (
+                        history.get("last_entry_rank", 0) or 0
+                )
 
                 is_reentry = previous_entry_price > 0
 
                 if is_reentry:
+
                     history["reentry_count"] += 1
                     history["reentered_recently"] = True
-                    history["ignition_timestamp"] = datetime.now()
+                    history["ignition_timestamp"] = now
 
-                    if current_price > 0 and previous_entry_price > 0:
+                    if (
+                            current_price > 0
+                            and previous_entry_price > 0
+                    ):
                         history["entry_price_change_pct"] = round(
-                            ((current_price - previous_entry_price)
-                             / previous_entry_price) * 100,
+                            (
+                                    (current_price - previous_entry_price)
+                                    / previous_entry_price
+                            ) * 100,
                             2
                         )
 
-                    if current_rank > 0 and previous_entry_rank > 0:
+                    if (
+                            current_rank > 0
+                            and previous_entry_rank > 0
+                    ):
                         # Positive = improved toward rank #1.
                         history["rank_improvement"] = (
-                            previous_entry_rank - current_rank
+                                previous_entry_rank
+                                - current_rank
                         )
+
                 else:
+
                     history["reentered_recently"] = False
                     history["entry_price_change_pct"] = 0.0
                     history["rank_improvement"] = 0
 
                 history["last_entry_price"] = current_price
                 history["last_entry_rank"] = current_rank
+
 
         # Nothing changed, so do not write anything
         if not entered_symbols and not exited_symbols:
@@ -1106,6 +1243,152 @@ class KaizenScanner:
 
         mover_context = self.mover_history.get(symbol, {})
 
+        # ==========================================
+        # MARKET RADAR
+        # ==========================================
+
+        radar_observation_count = int(
+            mover_context.get("observation_count", 0) or 0
+        )
+
+        radar_consecutive_scans = int(
+            mover_context.get("consecutive_scans", 0) or 0
+        )
+
+        radar_price_accel = float(
+            mover_context.get("price_accel_pct", 0) or 0
+        )
+
+        radar_rank_accel = int(
+            mover_context.get("rank_accel", 0) or 0
+        )
+
+        radar_gain_accel = float(
+            mover_context.get("percent_change_accel", 0) or 0
+        )
+
+        radar_score = 0
+        radar_reasons = []
+
+        # ==========================================
+        # 1. PERSISTENCE
+        # Max: 25 points
+        # ==========================================
+
+        if radar_consecutive_scans >= 6:
+            radar_score += 25
+            radar_reasons.append("PERSISTENT")
+
+        elif radar_consecutive_scans >= 4:
+            radar_score += 20
+            radar_reasons.append("PERSISTENT")
+
+        elif radar_consecutive_scans >= 3:
+            radar_score += 15
+            radar_reasons.append("BUILDING")
+
+        elif radar_consecutive_scans >= 2:
+            radar_score += 8
+
+        # ==========================================
+        # 2. PRICE ACCELERATION
+        # Max: 20 points
+        # ==========================================
+
+        if radar_price_accel >= 5:
+            radar_score += 20
+            radar_reasons.append("PRICE_SURGE")
+
+        elif radar_price_accel >= 2:
+            radar_score += 15
+            radar_reasons.append("PRICE_ACCEL")
+
+        elif radar_price_accel >= 0.75:
+            radar_score += 10
+            radar_reasons.append("PRICE_RISING")
+
+        elif radar_price_accel > 0:
+            radar_score += 5
+
+        # ==========================================
+        # 3. RANK ACCELERATION
+        # Max: 20 points
+        # ==========================================
+
+        if radar_rank_accel >= 10:
+            radar_score += 20
+            radar_reasons.append("RANK_SURGE")
+
+        elif radar_rank_accel >= 5:
+            radar_score += 15
+            radar_reasons.append("RANK_ACCEL")
+
+        elif radar_rank_accel >= 2:
+            radar_score += 10
+            radar_reasons.append("RANK_RISING")
+
+        elif radar_rank_accel > 0:
+            radar_score += 5
+
+        # ==========================================
+        # 4. GAIN ACCELERATION
+        # Max: 15 points
+        # ==========================================
+
+        if radar_gain_accel >= 5:
+            radar_score += 15
+            radar_reasons.append("GAIN_SURGE")
+
+        elif radar_gain_accel >= 2:
+            radar_score += 10
+            radar_reasons.append("GAIN_ACCEL")
+
+        elif radar_gain_accel >= 0.75:
+            radar_score += 5
+
+        # ==========================================
+        # 5. HOD PRESSURE
+        # Max: 10 points
+        # ==========================================
+
+        if distance_from_hod <= 2:
+            radar_score += 10
+            radar_reasons.append("HOD_PRESSURE")
+
+        elif distance_from_hod <= 5:
+            radar_score += 7
+
+        elif distance_from_hod <= 10:
+            radar_score += 3
+
+        # ==========================================
+        # 6. VWAP STRENGTH
+        # Max: 10 points
+        # ==========================================
+
+        if vwap_ok:
+            radar_score += 10
+            radar_reasons.append("ABOVE_VWAP")
+
+        # Clamp score to 0-100
+        radar_score = round(
+            max(0, min(radar_score, 100)),
+            2
+        )
+
+        radar_reason = "+".join(radar_reasons)
+
+        # ==========================================
+        # RADAR QUALIFICATION
+        # ==========================================
+
+        market_radar = (
+                radar_score >= 45
+                and radar_consecutive_scans >= 2
+                and gain >= 3
+                and vwap_extension <= 8
+        )
+
         mover_reentry = bool(
             mover_context.get("reentered_recently", False)
         )
@@ -1254,6 +1537,11 @@ class KaizenScanner:
         ):
             state = "🟣 ENTRY ALERT"
 
+        # Developing momentum detected by Market Radar.
+        # This is a WATCH state, not a trade alert.
+        elif market_radar:
+            state = "📡 MARKET RADAR"
+
         # Above VWAP but no stronger setup yet
         elif current_vwap > 0 and price > current_vwap:
             state = "🔷 VWAP RECLAIM"
@@ -1352,6 +1640,12 @@ class KaizenScanner:
             lifecycle = "🔵 Launch Pad"
             lifecycle_rank = 3
             action = "PREPARE"
+
+        # Stage 2.5 — Market Radar
+        elif market_radar:
+            lifecycle = "📡 MARKET RADAR"
+            lifecycle_rank = 2.5
+            action = "MONITOR"
 
         # Stage 2 — Momentum Building
         elif (
@@ -1598,6 +1892,18 @@ class KaizenScanner:
             "EarlySignal": "YES" if early_signal else "",
             "MomentumIgnition": "YES" if momentum_ignition else "",
             "IgnitionReason": ignition_reason,
+
+            # Market Radar
+            "MarketRadar": "YES" if market_radar else "",
+            "RadarScore": radar_score,
+            "RadarReason": radar_reason,
+            "RadarObservations": radar_observation_count,
+            "RadarPersistence": radar_consecutive_scans,
+            "RadarPriceAccel%": round(radar_price_accel, 2),
+            "RadarRankAccel": radar_rank_accel,
+            "RadarGainAccel": round(radar_gain_accel, 2),
+
+            # Mover re-entry
             "MoverReentry": "YES" if mover_reentry_fresh else "",
             "MoverPriceAccel%": round(mover_price_accel, 2),
             "MoverRankImprovement": mover_rank_improvement,
@@ -1746,12 +2052,13 @@ class KaizenScanner:
         #)
 
         state_rank = {
-            "🟢 HOD ATTACK": 9,
-            "🚀 TREND LEADER": 8,
-            "🟢 ORB BREAKOUT": 7,
-            "🟣 ENTRY ALERT": 6,
-            "⚡ MOMENTUM IGNITION": 5,
-            "🔵 LAUNCH PAD": 4,
+            "🟢 HOD ATTACK": 10,
+            "🚀 TREND LEADER": 9,
+            "🟢 ORB BREAKOUT": 8,
+            "🟣 ENTRY ALERT": 7,
+            "⚡ MOMENTUM IGNITION": 6,
+            "🔵 LAUNCH PAD": 5,
+            "📡 MARKET RADAR": 4,
             "🔷 VWAP RECLAIM": 3,
             "🟡 PULLBACK": 2,
             "🟠 EXTENDED": 1,

@@ -13,6 +13,25 @@ WATCHLIST = [
     "GXAI",
     "DAIC",
     "BTCT",
+    "VEEA",
+    "FTFT",
+    "YFOR",
+    "MEDS",
+    "RETO",
+    "DLXY",
+    "ZTG",
+    "QCLS",
+    "TPST",
+    "WHLR",
+    "GIPR",
+    "IMCC",
+    "SSM",
+    "CTNT",
+    "TRUG",
+    "GCTK",
+    "DCOY",
+    "GRML"
+
 
 
 
